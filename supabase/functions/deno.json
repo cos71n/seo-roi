@@ -1,0 +1,11 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "lib": ["deno.window"],
+    "strict": true
+  },
+  "tasks": {
+    "test": "deno test --allow-net --allow-env",
+    "dev": "deno run --allow-net --allow-env --watch"
+  }
+} 

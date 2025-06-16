@@ -45,6 +45,7 @@ export const AnalysisProgress: React.FC<AnalysisProgressProps> = ({
   const [estimatedTimeRemaining, setEstimatedTimeRemaining] = useState(0);
   const [discoveredCompetitors, setDiscoveredCompetitors] = useState<string[]>([]);
   const [isStalled, setIsStalled] = useState(false);
+  const [hasCompleted, setHasCompleted] = useState(false);
 
   // Create personalized analysis stages
   const [stages, setStages] = useState<AnalysisStage[]>([
@@ -53,7 +54,7 @@ export const AnalysisProgress: React.FC<AnalysisProgressProps> = ({
       title: 'Domain Validation & Setup',
       description: `Validating ${domain} and preparing analysis environment`,
       icon: Globe,
-      estimatedDuration: 15,
+      estimatedDuration: 5,
       status: 'pending',
       personalizedMessage: `Setting up analysis for ${companyName}...`
     },
@@ -62,7 +63,7 @@ export const AnalysisProgress: React.FC<AnalysisProgressProps> = ({
       title: 'Competitor Discovery',
       description: `Identifying top competitors in your industry`,
       icon: Search,
-      estimatedDuration: 45,
+      estimatedDuration: 10,
       status: 'pending',
       personalizedMessage: `Finding competitors for "${targetKeywords[0]}" and related keywords...`
     },
@@ -71,7 +72,7 @@ export const AnalysisProgress: React.FC<AnalysisProgressProps> = ({
       title: 'Domain Authority Analysis',
       description: `Analyzing ${domain} authority and backlink profile`,
       icon: TrendingUp,
-      estimatedDuration: 60,
+      estimatedDuration: 15,
       status: 'pending',
       personalizedMessage: `Evaluating ${companyName}&apos;s domain strength and link profile...`
     },
@@ -80,7 +81,7 @@ export const AnalysisProgress: React.FC<AnalysisProgressProps> = ({
       title: 'Keyword Performance Analysis',
       description: `Analyzing ranking performance for ${targetKeywords.length} target keywords`,
       icon: BarChart3,
-      estimatedDuration: 90,
+      estimatedDuration: 20,
       status: 'pending',
       personalizedMessage: `Checking rankings for "${targetKeywords.slice(0, 2).join('", "')}"${targetKeywords.length > 2 ? ` and ${targetKeywords.length - 2} more keywords` : ''}...`
     },
@@ -89,7 +90,7 @@ export const AnalysisProgress: React.FC<AnalysisProgressProps> = ({
       title: 'Competitive Gap Analysis',
       description: `Comparing performance against discovered competitors`,
       icon: Search,
-      estimatedDuration: 75,
+      estimatedDuration: 15,
       status: 'pending',
       personalizedMessage: `Analyzing gaps between ${companyName} and competitors...`
     },
@@ -98,7 +99,7 @@ export const AnalysisProgress: React.FC<AnalysisProgressProps> = ({
       title: 'AI Visibility Testing',
       description: `Testing visibility in AI search results`,
       icon: Brain,
-      estimatedDuration: 45,
+      estimatedDuration: 10,
       status: 'pending',
       personalizedMessage: `Testing how ${companyName} appears in AI-powered search...`
     }
@@ -118,9 +119,6 @@ export const AnalysisProgress: React.FC<AnalysisProgressProps> = ({
     if (stageIndex >= stages.length) {
       // All stages complete
       setOverallProgress(100);
-      setTimeout(() => {
-        onComplete?.();
-      }, 1000);
       return;
     }
 
@@ -153,7 +151,17 @@ export const AnalysisProgress: React.FC<AnalysisProgressProps> = ({
 
     // Move to next stage
     setCurrentStageIndex(stageIndex + 1);
-  }, [stages.length, onComplete, companyName]);
+  }, [stages.length, companyName]);
+
+  // Check if all stages are completed
+  useEffect(() => {
+    const allCompleted = stages.every(stage => stage.status === 'completed');
+    if (allCompleted && stages.length > 0 && !hasCompleted) {
+      console.log('All stages completed, triggering onComplete');
+      setHasCompleted(true);
+      onComplete?.();
+    }
+  }, [stages, onComplete, hasCompleted]);
 
   // Main processing effect
   useEffect(() => {
@@ -161,14 +169,14 @@ export const AnalysisProgress: React.FC<AnalysisProgressProps> = ({
       // Start processing
       processStage(0);
     }
-  }, [currentStageIndex, processStage]);
+  }, []); // Only run once on mount
 
   // Process next stage when currentStageIndex changes
   useEffect(() => {
-    if (currentStageIndex > 0 && currentStageIndex < stages.length) {
+    if (currentStageIndex > 0 && currentStageIndex <= stages.length) {
       const timer = setTimeout(() => {
         processStage(currentStageIndex);
-      }, 1000);
+      }, 500);
       return () => clearTimeout(timer);
     }
   }, [currentStageIndex, processStage, stages.length]);
@@ -176,7 +184,7 @@ export const AnalysisProgress: React.FC<AnalysisProgressProps> = ({
   // Simulate stage-specific processing with realistic delays
   const simulateStageProcessing = async (stage: AnalysisStage, index: number) => {
     const duration = stage.estimatedDuration * 1000;
-    const steps = 20; // Number of progress updates
+    const steps = 10; // Number of progress updates
     const stepDuration = duration / steps;
 
     for (let i = 0; i <= steps; i++) {
@@ -189,7 +197,7 @@ export const AnalysisProgress: React.FC<AnalysisProgressProps> = ({
       setOverallProgress(stageStartProgress + stageProgress);
 
       // Stage-specific updates
-      if (stage.id === 'competitor-discovery' && i === 10) {
+      if (stage.id === 'competitor-discovery' && i === 5) {
         // Simulate competitor discovery
         const competitors = DEMO_COMPETITORS.slice(0, 3 + Math.floor(Math.random() * 2));
         setDiscoveredCompetitors(competitors);
@@ -205,7 +213,7 @@ export const AnalysisProgress: React.FC<AnalysisProgressProps> = ({
       }
 
       // Check for stalled processing (simulate slow API responses)
-      if (timeElapsed > 180 && !isStalled) { // 3 minutes
+      if (timeElapsed > 60 && !isStalled) { // 1 minute
         setIsStalled(true);
       }
     }

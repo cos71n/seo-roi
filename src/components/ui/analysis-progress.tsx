@@ -1,8 +1,10 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { CheckCircle, Clock, Search, Globe, BarChart3, Brain, TrendingUp } from 'lucide-react';
+import { CheckCircle, Clock, Search, Globe, BarChart3, Brain, TrendingUp, AlertCircle } from 'lucide-react';
 import { ProgressBar } from './form-components';
+import { NotificationService } from '@/lib/services/notification-service';
+import { supabase } from '@/lib/services/job-queue';
 
 // Analysis stages with detailed information
 export interface AnalysisStage {
@@ -21,6 +23,8 @@ interface AnalysisProgressProps {
   companyName: string;
   targetKeywords: string[];
   onComplete?: () => void;
+  reportId?: string | null;
+  processingError?: string | null;
 }
 
 // Simulated competitor names for demo purposes
@@ -37,6 +41,8 @@ export const AnalysisProgress: React.FC<AnalysisProgressProps> = ({
   companyName,
   targetKeywords,
   onComplete,
+  reportId,
+  processingError,
 }) => {
   // State management
   const [currentStageIndex, setCurrentStageIndex] = useState(0);
@@ -46,6 +52,8 @@ export const AnalysisProgress: React.FC<AnalysisProgressProps> = ({
   const [discoveredCompetitors, setDiscoveredCompetitors] = useState<string[]>([]);
   const [isStalled, setIsStalled] = useState(false);
   const [hasCompleted, setHasCompleted] = useState(false);
+  const [reportStatus, setReportStatus] = useState<string | null>(null);
+  const [reportMessage, setReportMessage] = useState<string | null>(null);
 
   // Create personalized analysis stages
   const [stages, setStages] = useState<AnalysisStage[]>([
@@ -113,6 +121,85 @@ export const AnalysisProgress: React.FC<AnalysisProgressProps> = ({
 
     return () => clearInterval(timer);
   }, []);
+
+  // Subscribe to report status updates
+  useEffect(() => {
+    if (!reportId) {
+      // Use simulated progress if no reportId
+      return;
+    }
+
+    // Subscribe to report updates
+    const subscription = NotificationService.subscribeToReport(reportId, (report) => {
+      console.log('Report status update:', report.status, report.processing_message);
+      setReportStatus(report.status);
+      setReportMessage(report.processing_message);
+
+      // Map report status to stage progress
+      if (report.processing_message) {
+        updateStageFromMessage(report.processing_message);
+      }
+
+      if (report.status === 'completed') {
+        // Set all stages to completed
+        setStages(prev => prev.map(stage => ({ ...stage, status: 'completed' })));
+        setOverallProgress(100);
+        setHasCompleted(true);
+      } else if (report.status === 'failed') {
+        // Mark current stage as error
+        setStages(prev => prev.map((stage, index) => ({
+          ...stage,
+          status: index === currentStageIndex ? 'error' : stage.status
+        })));
+      }
+    });
+
+    // Fetch initial report status
+    fetchReportStatus();
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, [reportId]);
+
+  // Fetch current report status
+  const fetchReportStatus = async () => {
+    if (!reportId) return;
+
+    const { data, error } = await supabase
+      .from('reports')
+      .select('status, processing_message')
+      .eq('id', reportId)
+      .single();
+
+    if (data) {
+      setReportStatus(data.status);
+      setReportMessage(data.processing_message);
+      
+      if (data.processing_message) {
+        updateStageFromMessage(data.processing_message);
+      }
+    }
+  };
+
+  // Update stage based on processing message
+  const updateStageFromMessage = (message: string) => {
+    const messageLower = message.toLowerCase();
+    
+    if (messageLower.includes('fetching seo data')) {
+      setCurrentStageIndex(0);
+    } else if (messageLower.includes('analyzing competitors')) {
+      setCurrentStageIndex(1);
+    } else if (messageLower.includes('domain strength')) {
+      setCurrentStageIndex(2);
+    } else if (messageLower.includes('testing ai visibility')) {
+      setCurrentStageIndex(3);
+    } else if (messageLower.includes('calculating scores')) {
+      setCurrentStageIndex(4);
+    } else if (messageLower.includes('generating insights')) {
+      setCurrentStageIndex(5);
+    }
+  };
 
   // Process stage function
   const processStage = useCallback(async (stageIndex: number) => {
@@ -218,8 +305,6 @@ export const AnalysisProgress: React.FC<AnalysisProgressProps> = ({
       }
     }
   };
-
-
 
   // Format time helper
   const formatTime = (seconds: number): string => {
@@ -362,12 +447,32 @@ export const AnalysisProgress: React.FC<AnalysisProgressProps> = ({
 
       {/* Bottom message */}
       <div className="text-center">
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 max-w-md mx-auto">
-          <p className="text-sm text-blue-800">
-            <strong>Why does this take time?</strong><br />
-            We&apos;re analyzing millions of data points from multiple SEO databases to give {companyName} the most accurate assessment possible.
-          </p>
-        </div>
+        {processingError ? (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-4 max-w-md mx-auto">
+            <div className="flex items-center justify-center mb-2">
+              <AlertCircle className="h-5 w-5 text-red-600 mr-2" />
+              <p className="text-sm font-semibold text-red-800">Analysis Error</p>
+            </div>
+            <p className="text-sm text-red-700">
+              {processingError}
+            </p>
+            <p className="text-xs text-red-600 mt-2">
+              Please try refreshing the page or contact support if the issue persists.
+            </p>
+          </div>
+        ) : (
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 max-w-md mx-auto">
+            <p className="text-sm text-blue-800">
+              <strong>Why does this take time?</strong><br />
+              We&apos;re analyzing millions of data points from multiple SEO databases to give {companyName} the most accurate assessment possible.
+            </p>
+            {reportMessage && (
+              <p className="text-xs text-blue-600 mt-2 italic">
+                Current: {reportMessage}
+              </p>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -28,6 +28,9 @@ import {
   AIVisibilityData,
   calculateOverallScore 
 } from '@/lib/scoring';
+import { JobQueueService } from '@/lib/services/job-queue';
+import { NotificationService } from '@/lib/services/notification-service';
+import { supabase } from '@/lib/services/job-queue';
 
 export const IntakeFlow: React.FC = () => {
   // Form state management
@@ -39,6 +42,13 @@ export const IntakeFlow: React.FC = () => {
   const [showLeadGate, setShowLeadGate] = useState(false);
   const [reportData, setReportData] = useState<OverallScoreData | null>(null);
   const [contactInfo, setContactInfo] = useState<{ firstName: string; lastName: string; phone: string } | null>(null);
+  
+  // Job tracking state
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [reportId, setReportId] = useState<string | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
+  const [campaignId, setCampaignId] = useState<string | null>(null);
+  const [processingError, setProcessingError] = useState<string | null>(null);
 
   // Load saved form data on mount
   useEffect(() => {
@@ -113,9 +123,90 @@ export const IntakeFlow: React.FC = () => {
 
   // Start the assessment process
   const startAssessment = async () => {
-    // The analysis will be handled by the AnalysisProgress component
-    // This function is now just for setting up the processing step
-    setIsLoading(false); // Let AnalysisProgress handle its own loading state
+    if (!phase1Data) return;
+    
+    try {
+      // Create user record
+      const { data: user, error: userError } = await supabase
+        .from('users')
+        .insert({
+          email: phase1Data.email,
+          first_name: '', // Will be collected later in lead gate
+          phone: '', // Will be collected later
+          domain: phase1Data.domain,
+          company_name: phase1Data.companyName,
+          industry: phase1Data.industry,
+        })
+        .select()
+        .single();
+
+      if (userError) throw userError;
+      setUserId(user.id);
+
+      // Create campaign record
+      const { data: campaign, error: campaignError } = await supabase
+        .from('campaigns')
+        .insert({
+          user_id: user.id,
+          monthly_spend: phase1Data.monthlySpend,
+          investment_duration: phase1Data.investmentDuration,
+          target_keywords: phase1Data.targetKeywords,
+          conversion_rate: phase2Data?.conversionRate || null,
+          close_rate: phase2Data?.closeRate || null,
+          average_order_value: phase2Data?.averageOrderValue || null,
+        })
+        .select()
+        .single();
+
+      if (campaignError) throw campaignError;
+      setCampaignId(campaign.id);
+
+      // Create report record
+      const { data: report, error: reportError } = await supabase
+        .from('reports')
+        .insert({
+          user_id: user.id,
+          campaign_id: campaign.id,
+          status: 'queued',
+        })
+        .select()
+        .single();
+
+      if (reportError) throw reportError;
+      setReportId(report.id);
+
+      // Enqueue job for report generation
+      const priority = phase1Data.monthlySpend >= 5000 ? 2 : phase1Data.monthlySpend >= 3000 ? 1 : 0;
+      const enqueuedJobId = await JobQueueService.enqueueReportGeneration(
+        user.id,
+        campaign.id,
+        report.id,
+        priority
+      );
+      
+      setJobId(enqueuedJobId);
+      console.log('Job enqueued:', enqueuedJobId);
+
+      // Subscribe to report status updates
+      const subscription = NotificationService.subscribeToReport(report.id, (updatedReport) => {
+        console.log('Report status update:', updatedReport.status);
+        
+        if (updatedReport.status === 'completed') {
+          handleReportCompleted(updatedReport);
+        } else if (updatedReport.status === 'failed') {
+          setProcessingError(updatedReport.error_message || 'Report generation failed');
+        }
+      });
+
+      // Clean up subscription on unmount
+      return () => {
+        subscription.unsubscribe();
+      };
+      
+    } catch (error) {
+      console.error('Error starting assessment:', error);
+      setProcessingError('Failed to start assessment. Please try again.');
+    }
   };
 
   // Generate mock report data based on form inputs
@@ -186,15 +277,10 @@ export const IntakeFlow: React.FC = () => {
     return overallScore;
   };
 
-  // Handle analysis completion
+  // Handle analysis completion - now just a placeholder since real processing handles this
   const handleAnalysisComplete = () => {
-    console.log('Analysis complete callback triggered');
-    // Generate mock report data
-    const mockData = generateMockReportData();
-    console.log('Mock data generated:', mockData);
-    setReportData(mockData);
-    setCurrentStep(FormStep.LEAD_GATE);
-    console.log('Current step set to LEAD_GATE');
+    // This is now handled by the WebSocket subscription in startAssessment
+    console.log('Analysis complete callback triggered (legacy)');
   };
 
   // Handle analysis error
@@ -210,15 +296,39 @@ export const IntakeFlow: React.FC = () => {
     // Store contact information
     setContactInfo(leadData);
     
-    // Here you would:
-    // 1. Save lead data to database
-    // 2. Send data to Bento for email marketing
-    // 3. Generate and send PDF report
-    // 4. Show final success state
-    
-    // For now, just close the modal and show success
-    setShowLeadGate(false);
-    setCurrentStep(FormStep.RESULTS);
+    try {
+      // Update user record with contact info
+      if (userId) {
+        const { error: updateError } = await supabase
+          .from('users')
+          .update({
+            first_name: leadData.firstName,
+            phone: leadData.phone
+          })
+          .eq('id', userId);
+
+        if (updateError) {
+          console.error('Error updating user:', updateError);
+        }
+      }
+
+      // Create notification for report completion
+      if (phase1Data && reportId) {
+        await NotificationService.createInAppNotification(
+          userId!,
+          'SEO Assessment Complete',
+          `Your SEO ROI assessment for ${phase1Data.companyName} is ready to download.`,
+          `/reports/${reportId}`
+        );
+      }
+      
+      // Close modal and show success
+      setShowLeadGate(false);
+      setCurrentStep(FormStep.RESULTS);
+      
+    } catch (error) {
+      console.error('Error processing lead gate:', error);
+    }
   };
 
   // Handle editing forms
@@ -243,6 +353,63 @@ export const IntakeFlow: React.FC = () => {
 
   // Calculate current progress
   const progress = calculateProgress(currentStep);
+
+  // Handle report completion
+  const handleReportCompleted = async (report: any) => {
+    try {
+      // Fetch the complete report data
+      const { data: completeReport, error } = await supabase
+        .from('reports')
+        .select(`
+          *,
+          analysis_data,
+          overall_score,
+          link_score,
+          domain_score,
+          traffic_score,
+          ranking_score,
+          ai_visibility_score,
+          ai_commentary
+        `)
+        .eq('id', report.id)
+        .single();
+
+      if (error) throw error;
+
+      // The analysis_data from the job processor should already have the complete OverallScoreData structure
+      if (completeReport && completeReport.analysis_data && completeReport.analysis_data.scores) {
+        // Extract the complete score data from the analysis
+        const scoreData = completeReport.analysis_data.scores;
+        
+        // Ensure we have all required fields with defaults
+        const completeScoreData: OverallScoreData = {
+          authorityLinks: scoreData.authorityLinks || { score: 0, normalizedScore: 1, details: {}, insights: [], redFlags: [] },
+          authorityDomains: scoreData.authorityDomains || { score: 0, normalizedScore: 1, details: {}, insights: [], redFlags: [] },
+          trafficGrowth: scoreData.trafficGrowth || { score: 0, normalizedScore: 1, details: {}, insights: [], redFlags: [] },
+          rankingImprovements: scoreData.rankings || scoreData.rankingImprovements || { score: 0, normalizedScore: 1, details: {}, insights: [], redFlags: [] },
+          aiVisibility: scoreData.aiVisibility || { score: 0, normalizedScore: 1, details: {}, insights: [], redFlags: [] },
+          weightedScore: completeReport.overall_score * 10 || 0, // Convert 1-10 to 0-100
+          normalizedScore: completeReport.overall_score || 0,
+          performanceLevel: scoreData.overall?.performanceLevel || 'Average',
+          recommendations: scoreData.overall?.recommendations || [],
+          redFlags: scoreData.overall?.redFlags || [],
+          confidence: scoreData.overall?.confidence || 'Medium'
+        };
+
+        setReportData(completeScoreData);
+        setCurrentStep(FormStep.LEAD_GATE);
+      } else {
+        // Fallback to mock data if report structure is different
+        console.warn('Report structure unexpected, generating mock data');
+        const mockData = generateMockReportData();
+        setReportData(mockData);
+        setCurrentStep(FormStep.LEAD_GATE);
+      }
+    } catch (error) {
+      console.error('Error fetching completed report:', error);
+      setProcessingError('Failed to load report results. Please try again.');
+    }
+  };
 
   return (
     <div className="min-h-screen bg-gray-50 py-8">
@@ -342,6 +509,8 @@ export const IntakeFlow: React.FC = () => {
                   companyName={phase1Data.companyName}
                   targetKeywords={phase1Data.targetKeywords}
                   onComplete={handleAnalysisComplete}
+                  reportId={reportId}
+                  processingError={processingError}
                 />
               </div>
             )}

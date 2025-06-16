@@ -30,6 +30,7 @@ import {
 } from '@/lib/scoring';
 import { JobQueueService } from '@/lib/services/job-queue';
 import { NotificationService } from '@/lib/services/notification-service';
+import { WebhookService } from '@/lib/services/webhook-service';
 import { supabase } from '@/lib/services/job-queue';
 
 export const IntakeFlow: React.FC = () => {
@@ -309,6 +310,39 @@ export const IntakeFlow: React.FC = () => {
 
         if (updateError) {
           console.error('Error updating user:', updateError);
+        }
+      }
+
+      // Fetch complete data for webhook
+      if (userId && campaignId && reportId) {
+        // Fetch user, campaign, and report data
+        const [userResult, campaignResult, reportResult] = await Promise.all([
+          supabase.from('users').select('*').eq('id', userId).single(),
+          supabase.from('campaigns').select('*').eq('id', campaignId).single(),
+          supabase.from('reports').select('*').eq('id', reportId).single()
+        ]);
+
+        if (userResult.data && campaignResult.data && reportResult.data) {
+          // Build and send webhook
+          const webhookPayload = WebhookService.buildPayload({
+            user: userResult.data,
+            campaign: campaignResult.data,
+            report: reportResult.data,
+            leadData
+          });
+
+          // Send webhook (fire and forget - don't block UI)
+          WebhookService.sendLeadWebhook(webhookPayload, {
+            retryAttempts: 3
+          }).then(result => {
+            if (result.success) {
+              console.log('Webhook sent successfully');
+            } else {
+              console.error('Webhook failed:', result.error);
+            }
+          }).catch(error => {
+            console.error('Webhook error:', error);
+          });
         }
       }
 

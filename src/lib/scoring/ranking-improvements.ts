@@ -1,328 +1,255 @@
-import { RankingImprovementsData, ScoreResult } from './types';
+import { RankingImprovementsData, RankingChange, ScoreResult, RedFlag } from './types';
 
 /**
  * Ranking Improvements Scoring Algorithm (15% weight)
- * 
- * Evaluates keyword ranking performance based on:
- * - Distribution of keywords in top positions (3, 10, 20)
- * - Average position changes over time
- * - New keywords entering rankings
- * - Competitive comparison for shared keywords
+ * Based on position value weighting with exponential decay
  */
-export function calculateRankingImprovementsScore(
-  data: RankingImprovementsData
-): ScoreResult {
+export function calculateRankingImprovementsScore(data: RankingImprovementsData): ScoreResult {
   const insights: string[] = [];
   const details: Record<string, any> = {};
+  const redFlags: RedFlag[] = [];
 
-  // Calculate position distribution score (0-35 points)
-  const positionScore = calculatePositionDistributionScore(data, insights, details);
-
-  // Calculate improvement velocity score (0-25 points)
-  const velocityScore = calculateImprovementVelocityScore(data, insights, details);
-
-  // Calculate new rankings score (0-20 points)
-  const newRankingsScore = calculateNewRankingsScore(data, insights, details);
-
-  // Calculate competitive performance score (0-20 points)
-  const competitiveScore = calculateCompetitiveRankingsScore(data, insights, details);
-
-  // Total raw score (0-100)
-  const rawScore = positionScore + velocityScore + newRankingsScore + competitiveScore;
-
-  // Normalize to 1-10 scale
-  const normalizedScore = normalizeScore(rawScore);
-
-  // Add overall insights
-  generateRankingInsights(rawScore, data, insights);
+  // Calculate total value and possible value
+  let totalValue = 0;
+  let totalPossibleValue = 0;
+  let top3Count = 0;
+  let top10Count = 0;
+  let top20Count = 0;
+  let newRankings = 0;
+  
+  data.rankingChanges.forEach(change => {
+    const oldValue = change.oldPosition > 100 ? 0 : getPositionValue(change.oldPosition);
+    const newValue = change.newPosition > 100 ? 0 : getPositionValue(change.newPosition);
+    const improvement = newValue - oldValue;
+    
+    totalValue += improvement;
+    totalPossibleValue += (10 - oldValue); // Maximum possible improvement
+    
+    // Count current positions
+    if (change.newPosition <= 3) top3Count++;
+    if (change.newPosition <= 10) top10Count++;
+    if (change.newPosition <= 20) top20Count++;
+    
+    // Count new rankings (was >100, now <=100)
+    if (change.oldPosition > 100 && change.newPosition <= 100) {
+      newRankings++;
+    }
+  });
+  
+  // Calculate improvement percentage
+  const improvementPercentage = totalPossibleValue > 0 
+    ? (totalValue / totalPossibleValue) * 100 
+    : data.rankingChanges.length === 0 ? 0 : 50; // No improvement possible = neutral
+  
+  // Convert to 1-10 scale
+  let normalizedScore = Math.max(1, Math.min(10, improvementPercentage / 10));
+  
+  // Detect red flags
+  const rankingRedFlags = detectRankingRedFlags(data, top3Count, top10Count);
+  redFlags.push(...rankingRedFlags);
+  
+  // Apply red flag penalties
+  const totalPenalty = redFlags.reduce((sum, flag) => sum + flag.scorePenalty, 0);
+  const adjustedScore = Math.max(1, normalizedScore + totalPenalty);
+  
+  // Generate insights
+  generateRankingInsights(
+    data, 
+    improvementPercentage, 
+    totalValue, 
+    totalPossibleValue,
+    top3Count,
+    top10Count,
+    top20Count,
+    newRankings,
+    insights
+  );
+  
+  // Add details
+  details.totalKeywords = data.totalKeywords;
+  details.improvementPercentage = improvementPercentage;
+  details.totalValue = totalValue;
+  details.totalPossibleValue = totalPossibleValue;
+  details.averageImprovement = data.totalKeywords > 0 ? totalValue / data.totalKeywords : 0;
+  details.positionDistribution = {
+    top3: top3Count,
+    top10: top10Count,
+    top20: top20Count,
+    percentages: {
+      top3: data.totalKeywords > 0 ? (top3Count / data.totalKeywords) * 100 : 0,
+      top10: data.totalKeywords > 0 ? (top10Count / data.totalKeywords) * 100 : 0,
+      top20: data.totalKeywords > 0 ? (top20Count / data.totalKeywords) * 100 : 0
+    }
+  };
+  details.newRankings = newRankings;
+  
+  // Analyze by intent if available
+  const commercialKeywords = data.rankingChanges.filter(c => 
+    c.intent === 'commercial' || c.intent === 'transactional'
+  );
+  if (commercialKeywords.length > 0) {
+    details.commercialKeywordPerformance = {
+      count: commercialKeywords.length,
+      inTop10: commercialKeywords.filter(c => c.newPosition <= 10).length,
+      avgPosition: commercialKeywords.reduce((sum, c) => sum + c.newPosition, 0) / commercialKeywords.length
+    };
+  }
 
   return {
-    score: rawScore,
-    normalizedScore,
-    details: {
-      ...details,
-      positionScore,
-      velocityScore,
-      newRankingsScore,
-      competitiveScore,
-      rankingDistribution: {
-        top3: data.keywordsInTop3,
-        top10: data.keywordsInTop10,
-        top20: data.keywordsInTop20,
-        total: data.totalKeywords,
-        percentages: {
-          top3: (data.keywordsInTop3 / data.totalKeywords) * 100,
-          top10: (data.keywordsInTop10 / data.totalKeywords) * 100,
-          top20: (data.keywordsInTop20 / data.totalKeywords) * 100
-        }
-      }
-    },
-    insights
+    score: improvementPercentage,
+    normalizedScore: adjustedScore,
+    adjustedScore: adjustedScore !== normalizedScore ? adjustedScore : undefined,
+    details,
+    insights,
+    redFlags: redFlags.length > 0 ? redFlags : undefined
   };
 }
 
-function calculatePositionDistributionScore(
-  data: RankingImprovementsData,
-  insights: string[],
-  details: Record<string, any>
-): number {
-  let score = 0;
-
-  // Top 3 positions - up to 15 points
-  const top3Percentage = (data.keywordsInTop3 / data.totalKeywords) * 100;
-  if (top3Percentage >= 20) {
-    score += 15;
-    insights.push(`Excellent top 3 rankings: ${top3Percentage.toFixed(1)}% of keywords`);
-  } else if (top3Percentage >= 15) {
-    score += 12;
-    insights.push(`Strong top 3 presence: ${top3Percentage.toFixed(1)}% of keywords`);
-  } else if (top3Percentage >= 10) {
-    score += 9;
-    insights.push(`Good top 3 rankings but room for improvement`);
-  } else if (top3Percentage >= 5) {
-    score += 6;
-    insights.push(`Limited top 3 rankings - focus on high-intent keywords`);
-  } else {
-    score += 3;
-    insights.push(`Very few top 3 rankings - competitive content needed`);
-  }
-
-  // Top 10 positions - up to 10 points
-  const top10Percentage = (data.keywordsInTop10 / data.totalKeywords) * 100;
-  if (top10Percentage >= 40) {
-    score += 10;
-    insights.push(`${top10Percentage.toFixed(1)}% of keywords in top 10 - strong visibility`);
-  } else if (top10Percentage >= 30) {
-    score += 8;
-  } else if (top10Percentage >= 20) {
-    score += 6;
-  } else if (top10Percentage >= 10) {
-    score += 4;
-    insights.push(`Only ${top10Percentage.toFixed(1)}% in top 10 - significant optimization needed`);
-  } else {
-    score += 2;
-  }
-
-  // Top 20 positions - up to 10 points
-  const top20Percentage = (data.keywordsInTop20 / data.totalKeywords) * 100;
-  if (top20Percentage >= 60) {
-    score += 10;
-  } else if (top20Percentage >= 45) {
-    score += 8;
-  } else if (top20Percentage >= 30) {
-    score += 6;
-  } else if (top20Percentage >= 20) {
-    score += 4;
-  } else {
-    score += 2;
-    insights.push(`Low overall visibility - comprehensive SEO overhaul recommended`);
-  }
-
-  details.positionMetrics = {
-    top3Percentage,
-    top10Percentage,
-    top20Percentage,
-    visibilityScore: (top3Percentage * 3 + top10Percentage * 2 + top20Percentage) / 6
-  };
-
-  return score;
-}
-
-function calculateImprovementVelocityScore(
-  data: RankingImprovementsData,
-  insights: string[],
-  details: Record<string, any>
-): number {
-  let score = 0;
-
-  // Average position improvement - up to 25 points
-  const avgImprovement = data.averagePositionChange;
-  
-  if (avgImprovement >= 10) {
-    score = 25;
-    insights.push(`Outstanding ranking improvements: ${avgImprovement.toFixed(1)} positions average gain`);
-  } else if (avgImprovement >= 5) {
-    score = 20;
-    insights.push(`Excellent ranking momentum: ${avgImprovement.toFixed(1)} positions average gain`);
-  } else if (avgImprovement >= 3) {
-    score = 15;
-    insights.push(`Good ranking improvements: ${avgImprovement.toFixed(1)} positions average gain`);
-  } else if (avgImprovement >= 1) {
-    score = 10;
-    insights.push(`Modest ranking gains: ${avgImprovement.toFixed(1)} positions average`);
-  } else if (avgImprovement >= 0) {
-    score = 5;
-    insights.push(`Rankings stable but not improving significantly`);
-  } else {
-    score = 0;
-    insights.push(`WARNING: Rankings declining by ${Math.abs(avgImprovement).toFixed(1)} positions average`);
-  }
-
-  // Calculate improvement rate
-  const improvementRate = data.totalKeywords > 0 ? 
-    ((data.keywordsInTop10 - (data.keywordsInTop10 - avgImprovement * data.totalKeywords / 50)) / data.totalKeywords) * 100 : 0;
-
-  details.velocityMetrics = {
-    averageImprovement: avgImprovement,
-    improvementRate,
-    projectedTop10In3Months: Math.round(data.keywordsInTop10 + (avgImprovement * data.totalKeywords / 20))
-  };
-
-  return score;
-}
-
-function calculateNewRankingsScore(
-  data: RankingImprovementsData,
-  insights: string[],
-  details: Record<string, any>
-): number {
-  let score = 0;
-
-  // New keywords entering rankings - up to 20 points
-  const newKeywordPercentage = (data.newRankingKeywords / data.totalKeywords) * 100;
-  
-  if (newKeywordPercentage >= 20) {
-    score = 20;
-    insights.push(`Excellent expansion: ${data.newRankingKeywords} new keywords ranking`);
-  } else if (newKeywordPercentage >= 15) {
-    score = 16;
-    insights.push(`Strong keyword expansion: ${data.newRankingKeywords} new rankings`);
-  } else if (newKeywordPercentage >= 10) {
-    score = 12;
-    insights.push(`Good new keyword acquisition: ${data.newRankingKeywords} new rankings`);
-  } else if (newKeywordPercentage >= 5) {
-    score = 8;
-    insights.push(`Moderate expansion - target more long-tail opportunities`);
-  } else {
-    score = 4;
-    insights.push(`Limited new rankings - content gap analysis recommended`);
-  }
-
-  // Calculate expansion opportunity
-  const expansionPotential = Math.max(0, data.totalKeywords * 0.15 - data.newRankingKeywords);
-  
-  details.expansionMetrics = {
-    newKeywords: data.newRankingKeywords,
-    newKeywordPercentage,
-    expansionPotential: Math.round(expansionPotential),
-    growthRate: newKeywordPercentage / 6 // Monthly rate assuming 6-month period
-  };
-
-  return score;
-}
-
-function calculateCompetitiveRankingsScore(
-  data: RankingImprovementsData,
-  insights: string[],
-  details: Record<string, any>
-): number {
-  let score = 0;
-
-  const { betterRankings, worseRankings, totalSharedKeywords } = data.competitorComparison;
-  
-  // Win rate against competitors - up to 20 points
-  if (totalSharedKeywords > 0) {
-    const winRate = (betterRankings / totalSharedKeywords) * 100;
-    
-    if (winRate >= 60) {
-      score = 20;
-      insights.push(`Dominating competitors: winning ${winRate.toFixed(0)}% of shared keywords`);
-    } else if (winRate >= 50) {
-      score = 16;
-      insights.push(`Competitive advantage: winning ${winRate.toFixed(0)}% of shared keywords`);
-    } else if (winRate >= 40) {
-      score = 12;
-      insights.push(`Competitive parity: winning ${winRate.toFixed(0)}% of shared keywords`);
-    } else if (winRate >= 30) {
-      score = 8;
-      insights.push(`Behind competitors: winning only ${winRate.toFixed(0)}% of shared keywords`);
-    } else {
-      score = 4;
-      insights.push(`Significantly trailing competitors in rankings`);
-    }
-
-    // Identify improvement opportunities
-    const competitorGap = worseRankings - betterRankings;
-    if (competitorGap > 10) {
-      insights.push(`Opportunity: ${competitorGap} keywords where competitors outrank you`);
-    }
-
-    details.competitiveMetrics = {
-      winRate,
-      betterRankings,
-      worseRankings,
-      totalSharedKeywords,
-      competitiveGap: competitorGap,
-      improvementPotential: worseRankings
-    };
-  } else {
-    score = 10; // Neutral score if no shared keywords
-    insights.push('Limited keyword overlap with competitors - unique strategy detected');
-    details.competitiveMetrics = {
-      winRate: 0,
-      totalSharedKeywords: 0,
-      note: 'No direct competition on tracked keywords'
-    };
-  }
-
-  return score;
-}
-
-function normalizeScore(rawScore: number): number {
-  // Convert 0-100 to 1-10 scale with proper distribution
-  if (rawScore >= 90) return 10;
-  if (rawScore >= 80) return 9;
-  if (rawScore >= 70) return 8;
-  if (rawScore >= 60) return 7;
-  if (rawScore >= 50) return 6;
-  if (rawScore >= 40) return 5;
-  if (rawScore >= 30) return 4;
-  if (rawScore >= 20) return 3;
-  if (rawScore >= 10) return 2;
+function getPositionValue(position: number): number {
+  if (position <= 3) return 10;
+  if (position <= 5) return 8;
+  if (position <= 10) return 6;
+  if (position <= 20) return 3;
   return 1;
 }
 
-function generateRankingInsights(
-  score: number,
+function detectRankingRedFlags(
   data: RankingImprovementsData,
+  top3Count: number,
+  top10Count: number
+): RedFlag[] {
+  const redFlags: RedFlag[] = [];
+  
+  // Red Flag 1: Very few top rankings after significant investment
+  const top10Percentage = data.totalKeywords > 0 ? (top10Count / data.totalKeywords) * 100 : 0;
+  if (data.investmentMonths >= 12 && top10Percentage < 10) {
+    redFlags.push({
+      type: 'POOR_RANKING_PERFORMANCE',
+      severity: 'CRITICAL',
+      message: `Only ${top10Percentage.toFixed(0)}% of keywords ranking in top 10 after ${data.investmentMonths} months. This indicates fundamental SEO issues.`,
+      scorePenalty: -2
+    });
+  }
+  
+  // Red Flag 2: No high-intent keyword rankings
+  const commercialKeywords = data.rankingChanges.filter(c => 
+    c.intent === 'commercial' || c.intent === 'transactional'
+  );
+  const commercialInTop10 = commercialKeywords.filter(c => c.newPosition <= 10).length;
+  
+  if (commercialKeywords.length > 0 && commercialInTop10 === 0 && data.investmentMonths >= 8) {
+    redFlags.push({
+      type: 'NO_COMMERCIAL_RANKINGS',
+      severity: 'HIGH',
+      message: 'No commercial/transactional keywords ranking in top 10. SEO not driving revenue-focused traffic.',
+      scorePenalty: -1.5
+    });
+  }
+  
+  // Red Flag 3: Declining rankings
+  let decliningKeywords = 0;
+  data.rankingChanges.forEach(change => {
+    if (change.oldPosition <= 20 && change.newPosition > change.oldPosition) {
+      decliningKeywords++;
+    }
+  });
+  
+  const decliningPercentage = data.totalKeywords > 0 ? (decliningKeywords / data.totalKeywords) * 100 : 0;
+  if (decliningPercentage > 30) {
+    redFlags.push({
+      type: 'WIDESPREAD_RANKING_DECLINES',
+      severity: 'HIGH',
+      message: `${decliningPercentage.toFixed(0)}% of keywords have declining rankings. Possible algorithm penalty or competitive losses.`,
+      scorePenalty: -1.5
+    });
+  }
+  
+  return redFlags;
+}
+
+function generateRankingInsights(
+  data: RankingImprovementsData,
+  improvementPercentage: number,
+  totalValue: number,
+  totalPossibleValue: number,
+  top3Count: number,
+  top10Count: number,
+  top20Count: number,
+  newRankings: number,
   insights: string[]
 ): void {
-  // Overall ranking performance assessment
-  if (score >= 80) {
-    insights.push('EXCELLENT: Ranking performance is exceptional');
-    insights.push('Strategy: Maintain momentum while targeting featured snippets');
-  } else if (score >= 60) {
-    insights.push('GOOD: Rankings improving steadily with strong potential');
-    insights.push('Focus: Convert page 2 rankings to page 1 positions');
-  } else if (score >= 40) {
-    insights.push('AVERAGE: Ranking performance needs acceleration');
-    insights.push('Priority: On-page optimization and content enhancement');
-  } else if (score >= 20) {
-    insights.push('BELOW AVERAGE: Significant ranking challenges detected');
-    insights.push('Action: Technical SEO audit and content strategy review');
+  // Overall performance
+  if (improvementPercentage >= 70) {
+    insights.push(`Excellent ranking improvements: ${improvementPercentage.toFixed(0)}% of possible gains achieved.`);
+  } else if (improvementPercentage >= 50) {
+    insights.push(`Good ranking progress: ${improvementPercentage.toFixed(0)}% of potential improvements captured.`);
+  } else if (improvementPercentage >= 30) {
+    insights.push(`Moderate improvements: ${improvementPercentage.toFixed(0)}% of possible gains - room for growth.`);
   } else {
-    insights.push('POOR: Critical ranking performance issues');
-    insights.push('Urgent: Complete SEO strategy overhaul required');
+    insights.push(`Limited ranking improvements: Only ${improvementPercentage.toFixed(0)}% of potential achieved.`);
   }
-
-  // Calculate potential traffic impact
-  const potentialTop10Keywords = Math.round(data.totalKeywords * 0.4); // Target 40% in top 10
-  const currentTop10Gap = potentialTop10Keywords - data.keywordsInTop10;
   
-  if (currentTop10Gap > 0) {
-    insights.push(`Traffic opportunity: Move ${currentTop10Gap} more keywords into top 10`);
+  // Position distribution
+  const top3Percentage = data.totalKeywords > 0 ? (top3Count / data.totalKeywords) * 100 : 0;
+  const top10Percentage = data.totalKeywords > 0 ? (top10Count / data.totalKeywords) * 100 : 0;
+  
+  insights.push(`Current rankings: ${top3Percentage.toFixed(0)}% in top 3, ${top10Percentage.toFixed(0)}% in top 10.`);
+  
+  // Highlight strengths or weaknesses
+  if (top3Percentage >= 20) {
+    insights.push('Strong top 3 presence indicates good content relevance and authority.');
+  } else if (top3Percentage < 5) {
+    insights.push('Limited top 3 rankings - focus on improving best-performing pages.');
+  }
+  
+  // New rankings
+  if (newRankings > 0) {
+    insights.push(`Expanded visibility: ${newRankings} keywords entered rankings from unranked.`);
+  }
+  
+  // Commercial intent performance
+  const commercialKeywords = data.rankingChanges.filter(c => 
+    c.intent === 'commercial' || c.intent === 'transactional'
+  );
+  if (commercialKeywords.length > 0) {
+    const commercialInTop10 = commercialKeywords.filter(c => c.newPosition <= 10).length;
+    const commercialPercentage = (commercialInTop10 / commercialKeywords.length) * 100;
     
-    // Estimate traffic increase (assuming 5x traffic for top 10 vs 11-20)
-    const estimatedTrafficIncrease = currentTop10Gap * 5;
-    insights.push(`Potential impact: ${estimatedTrafficIncrease}% traffic increase achievable`);
-  }
-
-  // Specific tactical recommendations
-  if (data.keywordsInTop3 < data.totalKeywords * 0.15) {
-    insights.push('Tactic: Focus on snippet optimization for position 4-10 keywords');
+    if (commercialPercentage >= 50) {
+      insights.push(`Good commercial performance: ${commercialPercentage.toFixed(0)}% of money keywords in top 10.`);
+    } else {
+      insights.push(`Commercial opportunity: Only ${commercialPercentage.toFixed(0)}% of money keywords in top 10.`);
+    }
   }
   
-  if (data.newRankingKeywords < data.totalKeywords * 0.10) {
-    insights.push('Tactic: Expand content to target related long-tail keywords');
+  // Average movement
+  let totalMovement = 0;
+  let improvedCount = 0;
+  data.rankingChanges.forEach(change => {
+    const movement = change.oldPosition - change.newPosition;
+    if (movement > 0) {
+      totalMovement += movement;
+      improvedCount++;
+    }
+  });
+  
+  if (improvedCount > 0) {
+    const avgMovement = totalMovement / improvedCount;
+    insights.push(`Average improvement: ${avgMovement.toFixed(1)} positions for keywords that improved.`);
+  }
+  
+  // Recommendations
+  if (top10Percentage < 20) {
+    insights.push('Priority: On-page optimization for keywords ranking 11-20 to break into top 10.');
+  }
+  
+  if (newRankings < data.totalKeywords * 0.1) {
+    insights.push('Opportunity: Expand content to target more long-tail variations.');
+  }
+  
+  // Calculate traffic potential
+  const potentialTop10Keywords = Math.round(data.totalKeywords * 0.4) - top10Count;
+  if (potentialTop10Keywords > 0) {
+    insights.push(`Traffic opportunity: Moving ${potentialTop10Keywords} more keywords to top 10 could 5x their traffic.`);
   }
 } 

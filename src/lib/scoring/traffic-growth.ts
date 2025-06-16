@@ -1,316 +1,206 @@
-import { TrafficGrowthData, ScoreResult } from './types';
+import { TrafficGrowthData, ScoreResult, RedFlag } from './types';
 
 /**
  * Traffic Growth Scoring Algorithm (20% weight)
- * 
- * Evaluates organic traffic performance based on:
- * - Absolute traffic growth over 6 and 12 months
- * - Growth rate compared to competitors
- * - Consistency of month-to-month growth
- * - Alignment with industry benchmarks
+ * Based on annualized growth rates compared to competitors
  */
-export function calculateTrafficGrowthScore(
-  data: TrafficGrowthData
-): ScoreResult {
+export function calculateTrafficGrowthScore(data: TrafficGrowthData): ScoreResult {
   const insights: string[] = [];
   const details: Record<string, any> = {};
+  const redFlags: RedFlag[] = [];
 
-  // Calculate growth rate score (0-40 points)
-  const growthRateScore = calculateGrowthRateScore(data, insights, details);
-
-  // Calculate traffic volume score (0-20 points)
-  const volumeScore = calculateTrafficVolumeScore(data, insights, details);
-
-  // Calculate consistency score (0-20 points)
-  const consistencyScore = calculateConsistencyScore(data, insights, details);
-
-  // Calculate competitive performance score (0-20 points)
-  const competitiveScore = calculateCompetitiveTrafficScore(data, insights, details);
-
-  // Total raw score (0-100)
-  const rawScore = growthRateScore + volumeScore + consistencyScore + competitiveScore;
-
-  // Normalize to 1-10 scale
-  const normalizedScore = normalizeScore(rawScore);
-
-  // Add overall insights
-  generateTrafficInsights(rawScore, data, insights);
-
-  return {
-    score: rawScore,
-    normalizedScore,
-    details: {
-      ...details,
-      growthRateScore,
-      volumeScore,
-      consistencyScore,
-      competitiveScore,
-      trafficTrends: {
-        current: data.currentMonthlyTraffic,
-        sixMonthsAgo: data.trafficSixMonthsAgo,
-        twelveMonthsAgo: data.trafficTwelveMonthsAgo,
-        sixMonthGrowth: calculateGrowthPercentage(data.trafficSixMonthsAgo, data.currentMonthlyTraffic),
-        yearOverYearGrowth: calculateGrowthPercentage(data.trafficTwelveMonthsAgo, data.currentMonthlyTraffic)
-      }
-    },
-    insights
-  };
-}
-
-function calculateGrowthRateScore(
-  data: TrafficGrowthData,
-  insights: string[],
-  details: Record<string, any>
-): number {
-  let score = 0;
-
-  // 12-month growth rate - up to 25 points
-  const yearOverYearGrowth = calculateGrowthPercentage(data.trafficTwelveMonthsAgo, data.currentMonthlyTraffic);
+  // Annualize growth rates for fair comparison
+  const annualizedClientGrowth = data.clientGrowth * (12 / data.investmentMonths);
+  const averageCompetitorGrowth = data.competitorGrowths.reduce((sum, growth) => sum + growth, 0) / data.competitorGrowths.length;
   
-  if (yearOverYearGrowth >= 100) {
-    score += 25;
-    insights.push(`Outstanding traffic growth: ${yearOverYearGrowth.toFixed(0)}% year-over-year`);
-  } else if (yearOverYearGrowth >= 50) {
-    score += 20;
-    insights.push(`Excellent traffic growth: ${yearOverYearGrowth.toFixed(0)}% year-over-year`);
-  } else if (yearOverYearGrowth >= 25) {
-    score += 15;
-    insights.push(`Strong traffic growth: ${yearOverYearGrowth.toFixed(0)}% year-over-year`);
-  } else if (yearOverYearGrowth >= 10) {
-    score += 10;
-    insights.push(`Moderate traffic growth: ${yearOverYearGrowth.toFixed(0)}% year-over-year`);
-  } else if (yearOverYearGrowth > 0) {
-    score += 5;
-    insights.push(`Slow traffic growth: ${yearOverYearGrowth.toFixed(0)}% - acceleration needed`);
-  } else {
-    score += 0;
-    insights.push(`Traffic decline detected - immediate optimization required`);
-  }
-
-  // 6-month growth momentum - up to 15 points
-  const sixMonthGrowth = calculateGrowthPercentage(data.trafficSixMonthsAgo, data.currentMonthlyTraffic);
-  const monthlyGrowthRate = Math.pow(1 + sixMonthGrowth / 100, 1/6) - 1;
+  // Calculate relative performance
+  const relativePerformance = averageCompetitorGrowth > 0 
+    ? annualizedClientGrowth / averageCompetitorGrowth 
+    : annualizedClientGrowth > 0 ? 2 : 0;
   
-  if (monthlyGrowthRate >= 0.08) { // 8%+ monthly
-    score += 15;
-    insights.push(`Exceptional momentum: ${(monthlyGrowthRate * 100).toFixed(1)}% monthly growth rate`);
-  } else if (monthlyGrowthRate >= 0.05) { // 5%+ monthly
-    score += 12;
-    insights.push(`Strong momentum: ${(monthlyGrowthRate * 100).toFixed(1)}% monthly growth rate`);
-  } else if (monthlyGrowthRate >= 0.03) { // 3%+ monthly
-    score += 9;
-  } else if (monthlyGrowthRate >= 0.01) { // 1%+ monthly
-    score += 6;
+  // Score based on relative performance
+  let normalizedScore: number;
+  if (relativePerformance >= 1.5) {
+    normalizedScore = 10; // 50% better than competitors
+  } else if (relativePerformance >= 1.2) {
+    normalizedScore = 8; // 20% better
+  } else if (relativePerformance >= 0.8) {
+    normalizedScore = 6; // Within 20% of competitors
+  } else if (relativePerformance >= 0.5) {
+    normalizedScore = 4; // 50% of competitor growth
   } else {
-    score += 2;
+    normalizedScore = 2; // Less than 50% of competitor growth
   }
-
-  details.growthMetrics = {
-    yearOverYearGrowth,
-    sixMonthGrowth,
-    monthlyGrowthRate: monthlyGrowthRate * 100,
-    annualizedGrowth: Math.pow(1 + monthlyGrowthRate, 12) - 1
-  };
-
-  return score;
-}
-
-function calculateTrafficVolumeScore(
-  data: TrafficGrowthData,
-  insights: string[],
-  details: Record<string, any>
-): number {
-  let score = 0;
-
-  // Absolute traffic volume - up to 20 points
-  if (data.currentMonthlyTraffic >= 100000) {
-    score = 20;
-    insights.push(`High traffic volume: ${(data.currentMonthlyTraffic / 1000).toFixed(0)}K monthly visitors`);
-  } else if (data.currentMonthlyTraffic >= 50000) {
-    score = 16;
-    insights.push(`Strong traffic volume: ${(data.currentMonthlyTraffic / 1000).toFixed(0)}K monthly visitors`);
-  } else if (data.currentMonthlyTraffic >= 25000) {
-    score = 12;
-    insights.push(`Good traffic volume: ${(data.currentMonthlyTraffic / 1000).toFixed(0)}K monthly visitors`);
-  } else if (data.currentMonthlyTraffic >= 10000) {
-    score = 8;
-    insights.push(`Moderate traffic: ${data.currentMonthlyTraffic.toLocaleString()} monthly visitors`);
-  } else if (data.currentMonthlyTraffic >= 5000) {
-    score = 5;
-    insights.push(`Low traffic volume limiting growth potential`);
-  } else {
-    score = 2;
-    insights.push(`Very low traffic - fundamental SEO improvements needed`);
-  }
-
-  // Calculate traffic potential
-  const trafficPotential = Math.max(0, 25000 - data.currentMonthlyTraffic);
-  if (trafficPotential > 0) {
-    details.trafficPotential = {
-      currentTraffic: data.currentMonthlyTraffic,
-      targetTraffic: 25000,
-      gap: trafficPotential,
-      monthsToTarget: trafficPotential / (data.currentMonthlyTraffic * 0.05) // Assuming 5% monthly growth
+  
+  // Detect red flags
+  const trafficRedFlags = detectTrafficGrowthRedFlags(data, annualizedClientGrowth, averageCompetitorGrowth);
+  redFlags.push(...trafficRedFlags);
+  
+  // Apply red flag penalties
+  const totalPenalty = redFlags.reduce((sum, flag) => sum + flag.scorePenalty, 0);
+  const adjustedScore = Math.max(1, normalizedScore + totalPenalty);
+  
+  // Generate insights
+  generateTrafficInsights(data, annualizedClientGrowth, averageCompetitorGrowth, relativePerformance, insights);
+  
+  // Add details
+  details.clientGrowth = data.clientGrowth;
+  details.annualizedClientGrowth = annualizedClientGrowth;
+  details.competitorGrowths = data.competitorGrowths;
+  details.averageCompetitorGrowth = averageCompetitorGrowth;
+  details.relativePerformance = relativePerformance;
+  details.currentTraffic = data.currentMonthlyTraffic;
+  
+  // Add individual competitor comparison
+  details.competitorComparison = data.competitorGrowths.map((growth, index) => ({
+    competitor: `Competitor ${index + 1}`,
+    growth: growth,
+    clientRelativePerformance: growth > 0 ? (annualizedClientGrowth / growth) : 'N/A'
+  }));
+  
+  // Traffic dependency analysis
+  if (data.topKeywordsDependency !== undefined) {
+    details.trafficConcentration = {
+      topKeywordsDependency: data.topKeywordsDependency,
+      riskLevel: data.topKeywordsDependency > 0.6 ? 'High' : data.topKeywordsDependency > 0.4 ? 'Medium' : 'Low'
     };
   }
 
-  return score;
+  return {
+    score: relativePerformance * 50, // Convert to 0-100 scale
+    normalizedScore: adjustedScore,
+    adjustedScore: adjustedScore !== normalizedScore ? adjustedScore : undefined,
+    details,
+    insights,
+    redFlags: redFlags.length > 0 ? redFlags : undefined
+  };
 }
 
-function calculateConsistencyScore(
+function detectTrafficGrowthRedFlags(
   data: TrafficGrowthData,
-  insights: string[],
-  details: Record<string, any>
-): number {
-  let score = 0;
-
-  // Consistency score from data (0-100) - up to 20 points
-  if (data.consistencyScore >= 80) {
-    score = 20;
-    insights.push('Excellent traffic consistency - stable upward trend');
-  } else if (data.consistencyScore >= 70) {
-    score = 16;
-    insights.push('Good traffic consistency with minor fluctuations');
-  } else if (data.consistencyScore >= 60) {
-    score = 12;
-    insights.push('Moderate consistency - some volatility in traffic');
-  } else if (data.consistencyScore >= 50) {
-    score = 8;
-    insights.push('Inconsistent traffic patterns - stability improvements needed');
-  } else {
-    score = 4;
-    insights.push('High traffic volatility indicates algorithm vulnerability');
-  }
-
-  // Check for concerning patterns
-  const sixMonthGrowth = calculateGrowthPercentage(data.trafficSixMonthsAgo, data.currentMonthlyTraffic);
-  const oldSixMonthGrowth = calculateGrowthPercentage(data.trafficTwelveMonthsAgo, data.trafficSixMonthsAgo);
+  annualizedClientGrowth: number,
+  averageCompetitorGrowth: number
+): RedFlag[] {
+  const redFlags: RedFlag[] = [];
   
-  if (sixMonthGrowth < oldSixMonthGrowth * 0.5) {
-    insights.push('Warning: Growth rate is decelerating significantly');
+  // Red Flag 1: Falling behind competitors
+  if (data.investmentMonths >= 8 && annualizedClientGrowth < (averageCompetitorGrowth * 0.5)) {
+    redFlags.push({
+      type: 'FALLING_BEHIND_COMPETITORS',
+      severity: 'HIGH',
+      message: `Your traffic growth (${annualizedClientGrowth.toFixed(0)}%) is less than half the competitor average (${averageCompetitorGrowth.toFixed(0)}%) despite ${data.investmentMonths} months of SEO investment.`,
+      scorePenalty: -1.5
+    });
   }
-
-  details.consistencyMetrics = {
-    consistencyScore: data.consistencyScore,
-    volatilityLevel: getVolatilityLevel(data.consistencyScore),
-    growthDeceleration: oldSixMonthGrowth > 0 ? (oldSixMonthGrowth - sixMonthGrowth) / oldSixMonthGrowth : 0
-  };
-
-  return score;
-}
-
-function calculateCompetitiveTrafficScore(
-  data: TrafficGrowthData,
-  insights: string[],
-  details: Record<string, any>
-): number {
-  let score = 0;
-
-  // Compare growth rate to competitors - up to 10 points
-  const growthDifference = data.growthRate - data.competitorGrowthRate;
-  if (growthDifference >= 20) {
-    score += 10;
-    insights.push(`Significantly outpacing competitors (+${growthDifference.toFixed(0)}% growth differential)`);
-  } else if (growthDifference >= 10) {
-    score += 8;
-    insights.push(`Outperforming competitors (+${growthDifference.toFixed(0)}% growth differential)`);
-  } else if (growthDifference >= 0) {
-    score += 6;
-    insights.push('Matching or slightly exceeding competitor growth rates');
-  } else if (growthDifference >= -10) {
-    score += 4;
-    insights.push('Slightly behind competitor growth rates');
-  } else {
-    score += 1;
-    insights.push('Significantly lagging competitor traffic growth');
+  
+  // Red Flag 2: Stagnant or declining traffic
+  if (data.investmentMonths >= 9 && annualizedClientGrowth <= 0) {
+    redFlags.push({
+      type: 'STAGNANT_PROGRESS',
+      severity: 'HIGH',
+      message: 'No significant improvements in traffic despite ongoing investment. Strategy needs immediate review.',
+      scorePenalty: -1.5
+    });
   }
-
-  // Compare to industry average - up to 10 points
-  const industryDifference = data.growthRate - data.industryAverage;
-  if (industryDifference >= 15) {
-    score += 10;
-    insights.push('Far exceeding industry average growth rates');
-  } else if (industryDifference >= 5) {
-    score += 8;
-    insights.push('Above industry average performance');
-  } else if (industryDifference >= -5) {
-    score += 6;
-    insights.push('Meeting industry growth standards');
-  } else {
-    score += 3;
-    insights.push('Below industry average - optimization opportunities exist');
+  
+  // Red Flag 3: Over-reliance on few keywords
+  if (data.topKeywordsDependency && data.topKeywordsDependency > 0.6) {
+    redFlags.push({
+      type: 'KEYWORD_OVER_DEPENDENCY',
+      severity: 'MEDIUM',
+      message: `Over ${Math.round(data.topKeywordsDependency * 100)}% of traffic comes from less than 10 keywords. High risk if rankings drop.`,
+      scorePenalty: -1
+    });
   }
-
-  details.competitiveMetrics = {
-    growthRate: data.growthRate,
-    competitorGrowthRate: data.competitorGrowthRate,
-    industryAverage: data.industryAverage,
-    growthDifferential: growthDifference,
-    marketShareTrend: growthDifference > 0 ? 'gaining' : 'losing'
-  };
-
-  return score;
-}
-
-function calculateGrowthPercentage(oldValue: number, newValue: number): number {
-  if (oldValue === 0) return newValue > 0 ? 100 : 0;
-  return ((newValue - oldValue) / oldValue) * 100;
-}
-
-function getVolatilityLevel(consistencyScore: number): string {
-  if (consistencyScore >= 80) return 'Low';
-  if (consistencyScore >= 60) return 'Moderate';
-  if (consistencyScore >= 40) return 'High';
-  return 'Very High';
-}
-
-function normalizeScore(rawScore: number): number {
-  // Convert 0-100 to 1-10 scale with proper distribution
-  if (rawScore >= 90) return 10;
-  if (rawScore >= 80) return 9;
-  if (rawScore >= 70) return 8;
-  if (rawScore >= 60) return 7;
-  if (rawScore >= 50) return 6;
-  if (rawScore >= 40) return 5;
-  if (rawScore >= 30) return 4;
-  if (rawScore >= 20) return 3;
-  if (rawScore >= 10) return 2;
-  return 1;
+  
+  // Red Flag 4: No branded search presence
+  if (data.brandedSearchTraffic !== undefined && data.brandedSearchTraffic < 100 && data.investmentMonths >= 8) {
+    redFlags.push({
+      type: 'NO_BRAND_RECOGNITION',
+      severity: 'MEDIUM',
+      message: 'Minimal branded search traffic suggests poor brand building through SEO.',
+      scorePenalty: -1
+    });
+  }
+  
+  // Red Flag 5: Declining momentum
+  if (data.trafficHistory && data.trafficHistory.length >= 6) {
+    const recentMonths = data.trafficHistory.slice(-3);
+    const earlierMonths = data.trafficHistory.slice(-6, -3);
+    const recentAvg = recentMonths.reduce((a, b) => a + b, 0) / 3;
+    const earlierAvg = earlierMonths.reduce((a, b) => a + b, 0) / 3;
+    
+    if (earlierAvg > 0 && recentAvg < earlierAvg * 0.8) {
+      redFlags.push({
+        type: 'DECLINING_MOMENTUM',
+        severity: 'HIGH',
+        message: 'Traffic growth momentum has declined by over 20% in recent months.',
+        scorePenalty: -1
+      });
+    }
+  }
+  
+  return redFlags;
 }
 
 function generateTrafficInsights(
-  score: number,
   data: TrafficGrowthData,
+  annualizedClientGrowth: number,
+  averageCompetitorGrowth: number,
+  relativePerformance: number,
   insights: string[]
 ): void {
-  // Overall performance assessment
-  if (score >= 80) {
-    insights.push('EXCELLENT: Traffic growth is exceptional and sustainable');
-    insights.push('Recommendation: Maintain current strategy while exploring new channels');
-  } else if (score >= 60) {
-    insights.push('GOOD: Traffic trending positively with room for acceleration');
-    insights.push('Focus: Content expansion and technical SEO improvements');
-  } else if (score >= 40) {
-    insights.push('AVERAGE: Traffic growth needs strategic improvements');
-    insights.push('Priority: Content quality, keyword targeting, and user experience');
-  } else if (score >= 20) {
-    insights.push('BELOW AVERAGE: Traffic performance indicates SEO issues');
-    insights.push('Action: Comprehensive SEO audit and strategy overhaul needed');
+  // Performance assessment
+  if (relativePerformance >= 1.5) {
+    insights.push(`Excellent traffic growth: ${annualizedClientGrowth.toFixed(0)}% annualized vs competitor average of ${averageCompetitorGrowth.toFixed(0)}%.`);
+  } else if (relativePerformance >= 1.2) {
+    insights.push(`Strong growth performance: ${annualizedClientGrowth.toFixed(0)}% growth outpacing competitors by 20%.`);
+  } else if (relativePerformance >= 0.8) {
+    insights.push(`Competitive growth rate: ${annualizedClientGrowth.toFixed(0)}% is within range of competitor average.`);
+  } else if (relativePerformance >= 0.5) {
+    insights.push(`Below-average growth: ${annualizedClientGrowth.toFixed(0)}% is only ${(relativePerformance * 100).toFixed(0)}% of competitor performance.`);
   } else {
-    insights.push('POOR: Traffic performance is critically low');
-    insights.push('Urgent: Consider switching SEO providers or strategies');
+    insights.push(`Poor traffic growth: ${annualizedClientGrowth.toFixed(0)}% vs competitor average of ${averageCompetitorGrowth.toFixed(0)}%.`);
   }
-
-  // Calculate revenue impact
-  if (data.currentMonthlyTraffic > 0) {
-    const additionalTrafficNeeded = Math.max(0, data.industryAverage * data.currentMonthlyTraffic / 100);
-    if (additionalTrafficNeeded > 100) {
-      insights.push(`Revenue opportunity: ${Math.round(additionalTrafficNeeded).toLocaleString()} additional monthly visitors possible`);
+  
+  // Actual growth over investment period
+  insights.push(`Actual growth: ${data.clientGrowth.toFixed(0)}% over ${data.investmentMonths} months.`);
+  
+  // Current traffic volume
+  if (data.currentMonthlyTraffic >= 50000) {
+    insights.push(`Strong traffic base: ${(data.currentMonthlyTraffic / 1000).toFixed(0)}K monthly visitors.`);
+  } else if (data.currentMonthlyTraffic >= 10000) {
+    insights.push(`Moderate traffic: ${data.currentMonthlyTraffic.toLocaleString()} monthly visitors with growth potential.`);
+  } else {
+    insights.push(`Low traffic volume: ${data.currentMonthlyTraffic.toLocaleString()} monthly visitors needs acceleration.`);
+  }
+  
+  // Competitor comparison
+  const ahead = data.competitorGrowths.filter(growth => annualizedClientGrowth > growth).length;
+  const total = data.competitorGrowths.length;
+  insights.push(`Outperforming ${ahead} of ${total} competitors in traffic growth rate.`);
+  
+  // Traffic concentration risk
+  if (data.topKeywordsDependency !== undefined) {
+    if (data.topKeywordsDependency > 0.5) {
+      insights.push(`Risk: ${Math.round(data.topKeywordsDependency * 100)}% of traffic from top 10 keywords - diversification needed.`);
+    } else {
+      insights.push(`Good traffic diversity: ${Math.round(data.topKeywordsDependency * 100)}% from top 10 keywords.`);
     }
   }
-
-  // Growth acceleration tips
-  if (data.growthRate < 20) {
-    insights.push('Consider: Long-tail keyword targeting, featured snippets optimization');
+  
+  // Recommendations
+  if (relativePerformance < 1.0) {
+    insights.push('Priority: Accelerate content production and target high-volume keywords.');
+  }
+  
+  if (data.currentMonthlyTraffic < 10000) {
+    insights.push('Focus: Build topic authority in key service areas to drive traffic growth.');
+  }
+  
+  // Growth projection
+  if (annualizedClientGrowth > 0) {
+    const projectedTraffic = data.currentMonthlyTraffic * Math.pow(1 + annualizedClientGrowth / 100, 1);
+    insights.push(`Projection: ${Math.round(projectedTraffic).toLocaleString()} monthly visitors in 12 months at current growth rate.`);
   }
 } 

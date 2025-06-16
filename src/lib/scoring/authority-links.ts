@@ -1,258 +1,189 @@
-import { AuthorityLinksData, ScoreResult } from './types';
+import { AuthorityLinksData, ScoreResult, RedFlag, ScoringConfig } from './types';
+
+const config: ScoringConfig = {
+  minMonthlySpend: 1000,
+  minInvestmentMonths: 6,
+  linksPerThousand: 1.5,
+  authorityLinkCriteria: {
+    minDR: 20,
+    minMonthlyTraffic: 1000,
+    targetGeos: ['AU', 'US', 'UK', 'EU', 'NZ', 'CA']
+  }
+};
 
 /**
  * Authority Links Scoring Algorithm (35% weight)
- * 
- * Evaluates the quality and growth of backlinks based on:
- * - Total number of referring domains
- * - Distribution of high/medium/low authority links
- * - Monthly growth rate
- * - Comparison to competitors and industry benchmarks
+ * Base Formula: $1,000/month = 1-2 authority links/month
  */
-export function calculateAuthorityLinksScore(
-  data: AuthorityLinksData
-): ScoreResult {
+export function calculateAuthorityLinksScore(data: AuthorityLinksData): ScoreResult {
   const insights: string[] = [];
   const details: Record<string, any> = {};
+  const redFlags: RedFlag[] = [];
 
-  // Handle edge case: no links at all
-  if (data.totalLinks === 0) {
-    insights.push('No backlinks detected - critical SEO foundation missing');
-    insights.push('Immediate action required: Begin link building campaign');
-    
-    return {
-      score: 0,
-      normalizedScore: 1,
-      details: {
-        qualityScore: 0,
-        growthScore: 0,
-        competitiveScore: 0,
-        breakdown: {
-          highAuthorityPercentage: 0,
-          mediumAuthorityPercentage: 0,
-          lowAuthorityPercentage: 0,
-        }
-      },
-      insights
+  // Calculate expected links based on investment
+  const expectedLinks = calculateExpectedLinks(data.monthlySpend, data.investmentMonths);
+  
+  // Calculate base score
+  const percentage = (data.actualLinks / expectedLinks) * 100;
+  const cappedPercentage = Math.min(percentage, 100); // Cap at 100% to prevent over-scoring
+  
+  // Convert to 1-10 scale
+  let normalizedScore = Math.max(1, Math.min(10, cappedPercentage / 10));
+  
+  // Detect red flags
+  const linkRedFlags = detectLinkBuildingRedFlags(data, expectedLinks);
+  redFlags.push(...linkRedFlags);
+  
+  // Apply red flag penalties
+  const totalPenalty = redFlags.reduce((sum, flag) => sum + flag.scorePenalty, 0);
+  const adjustedScore = Math.max(1, normalizedScore + totalPenalty);
+  
+  // Generate insights
+  generateLinkInsights(data, expectedLinks, percentage, insights);
+  
+  // Add details
+  details.expectedLinks = expectedLinks;
+  details.actualLinks = data.actualLinks;
+  details.performancePercentage = percentage;
+  details.monthlyLinkRate = data.actualLinks / data.investmentMonths;
+  details.expectedMonthlyRate = expectedLinks / data.investmentMonths;
+  
+  if (data.linkBreakdown) {
+    const total = data.linkBreakdown.highQuality + data.linkBreakdown.mediumQuality + data.linkBreakdown.lowQuality;
+    details.qualityDistribution = {
+      highQuality: total > 0 ? (data.linkBreakdown.highQuality / total) * 100 : 0,
+      mediumQuality: total > 0 ? (data.linkBreakdown.mediumQuality / total) * 100 : 0,
+      lowQuality: total > 0 ? (data.linkBreakdown.lowQuality / total) * 100 : 0
     };
   }
 
-  // Calculate quality score (0-40 points)
-  const qualityScore = calculateQualityScore(data, insights, details);
-
-  // Calculate growth score (0-30 points)
-  const growthScore = calculateGrowthScore(data, insights, details);
-
-  // Calculate competitive position score (0-30 points)
-  const competitiveScore = calculateCompetitiveScore(data, insights, details);
-
-  // Total raw score (0-100)
-  const rawScore = qualityScore + growthScore + competitiveScore;
-
-  // Normalize to 1-10 scale
-  const normalizedScore = normalizeScore(rawScore);
-
-  // Add overall insights
-  generateOverallInsights(rawScore, data, insights);
-
   return {
-    score: rawScore,
-    normalizedScore,
-    details: {
-      ...details,
-      qualityScore,
-      growthScore,
-      competitiveScore,
-      breakdown: {
-        highAuthorityPercentage: (data.highAuthorityLinks / data.totalLinks) * 100,
-        mediumAuthorityPercentage: (data.mediumAuthorityLinks / data.totalLinks) * 100,
-        lowAuthorityPercentage: (data.lowAuthorityLinks / data.totalLinks) * 100,
-      }
-    },
-    insights
+    score: cappedPercentage,
+    normalizedScore: adjustedScore,
+    adjustedScore: adjustedScore !== normalizedScore ? adjustedScore : undefined,
+    details,
+    insights,
+    redFlags: redFlags.length > 0 ? redFlags : undefined
   };
 }
 
-function calculateQualityScore(
-  data: AuthorityLinksData,
-  insights: string[],
-  details: Record<string, any>
-): number {
-  let score = 0;
-
-  // High authority links (DR 70+) - up to 20 points
-  const highAuthorityRatio = data.highAuthorityLinks / data.totalLinks;
-  if (highAuthorityRatio >= 0.15) {
-    score += 20;
-    insights.push('Excellent high-authority link profile (15%+ DR 70+ domains)');
-  } else if (highAuthorityRatio >= 0.10) {
-    score += 15;
-    insights.push('Good high-authority link profile (10-15% DR 70+ domains)');
-  } else if (highAuthorityRatio >= 0.05) {
-    score += 10;
-    insights.push('Average high-authority link profile (5-10% DR 70+ domains)');
-  } else {
-    score += 5;
-    insights.push('Low percentage of high-authority links - significant room for improvement');
-  }
-
-  // Medium authority links (DR 40-69) - up to 10 points
-  const mediumAuthorityRatio = data.mediumAuthorityLinks / data.totalLinks;
-  if (mediumAuthorityRatio >= 0.30) {
-    score += 10;
-  } else if (mediumAuthorityRatio >= 0.20) {
-    score += 7;
-  } else {
-    score += 3;
-  }
-
-  // Total link volume - up to 10 points
-  if (data.totalLinks >= 1000) {
-    score += 10;
-    insights.push('Strong overall link volume (1000+ referring domains)');
-  } else if (data.totalLinks >= 500) {
-    score += 7;
-    insights.push('Good link volume (500+ referring domains)');
-  } else if (data.totalLinks >= 100) {
-    score += 4;
-    insights.push('Moderate link volume - continued link building needed');
-  } else {
-    score += 1;
-    insights.push('Low link volume - aggressive link building strategy required');
-  }
-
-  details.qualityMetrics = {
-    highAuthorityRatio,
-    mediumAuthorityRatio,
-    totalLinks: data.totalLinks
-  };
-
-  return score;
+function calculateExpectedLinks(monthlySpend: number, investmentMonths: number): number {
+  const linksPerThousand = config.linksPerThousand;
+  const expectedLinksPerMonth = (monthlySpend / 1000) * linksPerThousand;
+  return Math.round(expectedLinksPerMonth * investmentMonths);
 }
 
-function calculateGrowthScore(
-  data: AuthorityLinksData,
-  insights: string[],
-  details: Record<string, any>
-): number {
-  let score = 0;
-  const monthlyGrowth = data.linkGrowthRate;
-
-  // Monthly growth rate - up to 30 points
-  if (monthlyGrowth >= 10) {
-    score = 30;
-    insights.push(`Exceptional link growth rate (${monthlyGrowth.toFixed(1)}% monthly)`);
-  } else if (monthlyGrowth >= 5) {
-    score = 25;
-    insights.push(`Strong link growth rate (${monthlyGrowth.toFixed(1)}% monthly)`);
-  } else if (monthlyGrowth >= 2) {
-    score = 20;
-    insights.push(`Healthy link growth rate (${monthlyGrowth.toFixed(1)}% monthly)`);
-  } else if (monthlyGrowth >= 1) {
-    score = 15;
-    insights.push(`Modest link growth rate (${monthlyGrowth.toFixed(1)}% monthly)`);
-  } else if (monthlyGrowth > 0) {
-    score = 10;
-    insights.push(`Slow link growth rate (${monthlyGrowth.toFixed(1)}% monthly) - acceleration needed`);
-  } else {
-    score = 0;
-    insights.push('Link profile is stagnant or declining - immediate attention required');
+function detectLinkBuildingRedFlags(
+  data: AuthorityLinksData, 
+  expectedLinks: number
+): RedFlag[] {
+  const redFlags: RedFlag[] = [];
+  
+  // Red Flag 1: Severe link deficit after significant investment
+  if (data.investmentMonths >= 12 && data.actualLinks < (expectedLinks * 0.3)) {
+    redFlags.push({
+      type: 'SEVERE_LINK_DEFICIT',
+      severity: 'CRITICAL',
+      message: `After ${data.investmentMonths} months, only ${data.actualLinks} authority links vs ${expectedLinks} expected. This suggests fundamental link building strategy failures.`,
+      scorePenalty: -2
+    });
   }
-
-  details.growthMetrics = {
-    monthlyGrowthRate: monthlyGrowth,
-    annualizedGrowth: monthlyGrowth * 12
-  };
-
-  return score;
+  
+  // Red Flag 2: No recent link acquisition
+  if (data.investmentMonths >= 6 && data.recentLinks6Months === 0) {
+    redFlags.push({
+      type: 'NO_RECENT_LINKS',
+      severity: 'HIGH',
+      message: 'No authority links acquired in the past 6 months despite ongoing SEO investment.',
+      scorePenalty: -1.5
+    });
+  }
+  
+  // Red Flag 3: Poor link quality progression
+  if (data.linkBreakdown) {
+    const total = data.linkBreakdown.highQuality + data.linkBreakdown.mediumQuality + data.linkBreakdown.lowQuality;
+    const lowQualityRatio = total > 0 ? data.linkBreakdown.lowQuality / total : 0;
+    
+    if (lowQualityRatio > 0.7) {
+      redFlags.push({
+        type: 'LOW_QUALITY_LINKS',
+        severity: 'MEDIUM',
+        message: `Over ${Math.round(lowQualityRatio * 100)}% of acquired links are from low-authority domains (DR <20).`,
+        scorePenalty: -1
+      });
+    }
+  }
+  
+  // Red Flag 4: Declining link velocity
+  if (data.linkGrowthByMonth && data.linkGrowthByMonth.length >= 6) {
+    const recentMonths = data.linkGrowthByMonth.slice(-3);
+    const earlierMonths = data.linkGrowthByMonth.slice(-6, -3);
+    const recentAvg = recentMonths.reduce((a, b) => a + b, 0) / 3;
+    const earlierAvg = earlierMonths.reduce((a, b) => a + b, 0) / 3;
+    
+    if (earlierAvg > 0 && recentAvg < earlierAvg * 0.3) {
+      redFlags.push({
+        type: 'DECLINING_LINK_VELOCITY',
+        severity: 'HIGH',
+        message: 'Link acquisition rate has declined by over 70% in recent months.',
+        scorePenalty: -1
+      });
+    }
+  }
+  
+  return redFlags;
 }
 
-function calculateCompetitiveScore(
+function generateLinkInsights(
   data: AuthorityLinksData,
-  insights: string[],
-  details: Record<string, any>
-): number {
-  let score = 0;
-
-  // Compare to competitor average - up to 15 points
-  const competitorRatio = data.totalLinks / data.competitorAverage;
-  if (competitorRatio >= 1.5) {
-    score += 15;
-    insights.push('Significantly outperforming competitors in link acquisition');
-  } else if (competitorRatio >= 1.0) {
-    score += 10;
-    insights.push('Matching or exceeding competitor link profiles');
-  } else if (competitorRatio >= 0.5) {
-    score += 5;
-    insights.push('Below competitor average - opportunity to gain market share');
-  } else {
-    score += 0;
-    insights.push('Significantly behind competitors - aggressive strategy needed');
-  }
-
-  // Compare to industry benchmark - up to 15 points
-  const benchmarkRatio = data.totalLinks / data.industryBenchmark;
-  if (benchmarkRatio >= 1.2) {
-    score += 15;
-    insights.push('Exceeding industry benchmarks for your spend level');
-  } else if (benchmarkRatio >= 0.8) {
-    score += 10;
-    insights.push('Meeting industry benchmarks for your spend level');
-  } else if (benchmarkRatio >= 0.5) {
-    score += 5;
-    insights.push('Below industry benchmarks - ROI improvement possible');
-  } else {
-    score += 0;
-    insights.push('Far below industry benchmarks - campaign effectiveness concerns');
-  }
-
-  details.competitiveMetrics = {
-    competitorRatio,
-    benchmarkRatio,
-    competitorGap: data.competitorAverage - data.totalLinks,
-    benchmarkGap: data.industryBenchmark - data.totalLinks
-  };
-
-  return score;
-}
-
-function normalizeScore(rawScore: number): number {
-  // Convert 0-100 to 1-10 scale with proper distribution
-  if (rawScore >= 90) return 10;
-  if (rawScore >= 80) return 9;
-  if (rawScore >= 70) return 8;
-  if (rawScore >= 60) return 7;
-  if (rawScore >= 50) return 6;
-  if (rawScore >= 40) return 5;
-  if (rawScore >= 30) return 4;
-  if (rawScore >= 20) return 3;
-  if (rawScore >= 10) return 2;
-  return 1;
-}
-
-function generateOverallInsights(
-  score: number,
-  data: AuthorityLinksData,
+  expectedLinks: number,
+  percentage: number,
   insights: string[]
 ): void {
-  // Add strategic recommendations based on score
-  if (score < 30) {
-    insights.push('CRITICAL: Link building strategy requires immediate overhaul');
-    insights.push('Consider: Guest posting, digital PR, and resource page outreach');
-  } else if (score < 50) {
-    insights.push('Link building efforts need significant improvement');
-    insights.push('Focus on acquiring more high-authority links and increasing velocity');
-  } else if (score < 70) {
-    insights.push('Link profile is developing but has room for optimization');
-    insights.push('Target more DR 70+ domains and maintain consistent growth');
+  const monthlyRate = data.actualLinks / data.investmentMonths;
+  const expectedMonthlyRate = expectedLinks / data.investmentMonths;
+  
+  // Performance assessment
+  if (percentage >= 80) {
+    insights.push(`Strong link building performance: ${data.actualLinks} authority links acquired (${percentage.toFixed(0)}% of expected).`);
+  } else if (percentage >= 60) {
+    insights.push(`Good link acquisition: ${data.actualLinks} links, meeting ${percentage.toFixed(0)}% of expectations.`);
+  } else if (percentage >= 40) {
+    insights.push(`Below-target link building: ${data.actualLinks} links is only ${percentage.toFixed(0)}% of expected ${expectedLinks} links.`);
   } else {
-    insights.push('Strong link building performance - maintain momentum');
-    insights.push('Continue diversifying link sources and targeting premium domains');
+    insights.push(`Poor link building results: ${data.actualLinks} links vs ${expectedLinks} expected (${percentage.toFixed(0)}%).`);
   }
-
-  // Calculate potential missed links based on competitor gap
-  if (data.competitorAverage > data.totalLinks) {
-    const missedLinks = Math.round(data.competitorAverage - data.totalLinks);
-    insights.push(`Opportunity: Acquire ${missedLinks} more links to match competitors`);
+  
+  // Monthly rate comparison
+  insights.push(`Current rate: ${monthlyRate.toFixed(1)} links/month vs expected ${expectedMonthlyRate.toFixed(1)} links/month.`);
+  
+  // Investment efficiency
+  const costPerLink = (data.monthlySpend * data.investmentMonths) / data.actualLinks;
+  if (data.actualLinks > 0) {
+    insights.push(`Cost per authority link: $${Math.round(costPerLink).toLocaleString()}`);
+  }
+  
+  // Quality insights
+  if (data.linkBreakdown) {
+    const highQualityPercentage = data.actualLinks > 0 
+      ? (data.linkBreakdown.highQuality / data.actualLinks) * 100 
+      : 0;
+    
+    if (highQualityPercentage >= 30) {
+      insights.push(`Excellent link quality: ${highQualityPercentage.toFixed(0)}% are high-authority (DR 70+) domains.`);
+    } else if (highQualityPercentage >= 15) {
+      insights.push(`Good link quality mix with ${highQualityPercentage.toFixed(0)}% high-authority domains.`);
+    } else {
+      insights.push(`Link quality needs improvement: Only ${highQualityPercentage.toFixed(0)}% from high-authority domains.`);
+    }
+  }
+  
+  // Recommendations
+  if (percentage < 60) {
+    insights.push('Recommendation: Review link building strategy and tactics. Consider diversifying outreach methods.');
+  }
+  
+  if (data.recentLinks6Months !== undefined && data.recentLinks6Months < 5) {
+    insights.push('Alert: Link acquisition has stalled. Immediate strategy review needed.');
   }
 } 

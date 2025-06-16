@@ -5,404 +5,427 @@ import {
   calculateRankingImprovementsScore,
   calculateAIVisibilityScore,
   calculateOverallScore,
-  calculatePartialScore,
+  validateScoreInputs,
   AuthorityLinksData,
   AuthorityDomainsData,
   TrafficGrowthData,
   RankingImprovementsData,
   AIVisibilityData
-} from '@/lib/scoring';
+} from '../../lib/scoring';
 
-describe('Scoring Algorithms', () => {
-  
-  describe('Authority Links Scoring', () => {
-    it('should calculate high score for excellent link profile', () => {
+describe('SEO ROI Scoring Algorithms', () => {
+  describe('Authority Links Score', () => {
+    it('should calculate perfect score for meeting expectations', () => {
       const data: AuthorityLinksData = {
-        totalLinks: 1200,
-        highAuthorityLinks: 200,
-        mediumAuthorityLinks: 400,
-        lowAuthorityLinks: 600,
-        linkGrowthRate: 8,
-        competitorAverage: 800,
-        industryBenchmark: 1000
+        actualLinks: 60,
+        monthlySpend: 3000,
+        investmentMonths: 12,
+        linkBreakdown: {
+          highQuality: 20,
+          mediumQuality: 30,
+          lowQuality: 10
+        }
       };
 
       const result = calculateAuthorityLinksScore(data);
       
-      expect(result.score).toBeGreaterThan(70);
-      expect(result.normalizedScore).toBeGreaterThanOrEqual(7);
-      expect(result.insights).toContain('Excellent high-authority link profile (15%+ DR 70+ domains)');
+      // Expected links: (3000/1000) * 1.5 * 12 = 54
+      // Performance: 60/54 = 111%, capped at 100%
+      // Score: 100/10 = 10
+      expect(result.normalizedScore).toBe(10);
+      expect(result.score).toBe(100);
+      expect(result.details.expectedLinks).toBe(54);
     });
 
-    it('should calculate low score for poor link profile', () => {
+    it('should calculate moderate score for partial achievement', () => {
       const data: AuthorityLinksData = {
-        totalLinks: 50,
-        highAuthorityLinks: 2,
-        mediumAuthorityLinks: 8,
-        lowAuthorityLinks: 40,
-        linkGrowthRate: 0.5,
-        competitorAverage: 500,
-        industryBenchmark: 400
+        actualLinks: 32,
+        monthlySpend: 3000,
+        investmentMonths: 12,
+        linkBreakdown: {
+          highQuality: 8,
+          mediumQuality: 16,
+          lowQuality: 8
+        }
       };
 
       const result = calculateAuthorityLinksScore(data);
       
-      expect(result.score).toBeLessThan(30);
-      expect(result.normalizedScore).toBeLessThanOrEqual(3);
-      expect(result.insights).toContain('Low link volume - aggressive link building strategy required');
+      // Expected: 54, Actual: 32, Performance: 59.3%
+      expect(result.normalizedScore).toBeCloseTo(5.9, 1);
+      expect(result.insights).toContain('Below-target link building: 32 links is only 59% of expected 54 links.');
     });
 
-    it('should handle zero links gracefully', () => {
+    it('should apply red flag penalties for severe underperformance', () => {
       const data: AuthorityLinksData = {
-        totalLinks: 0,
-        highAuthorityLinks: 0,
-        mediumAuthorityLinks: 0,
-        lowAuthorityLinks: 0,
-        linkGrowthRate: 0,
-        competitorAverage: 500,
-        industryBenchmark: 400
+        actualLinks: 10,
+        monthlySpend: 3000,
+        investmentMonths: 15,
+        recentLinks6Months: 0,
+        linkBreakdown: {
+          highQuality: 1,
+          mediumQuality: 2,
+          lowQuality: 7
+        }
       };
 
       const result = calculateAuthorityLinksScore(data);
       
-      expect(result.score).toBe(0);
+      // Expected: 67.5, Actual: 10, Performance: 14.8%
+      // Base score: 1.48, with red flag penalties
+      expect(result.redFlags).toBeDefined();
+      expect(result.redFlags!.length).toBeGreaterThan(0);
+      expect(result.adjustedScore).toBeDefined();
+      expect(result.adjustedScore).toBeLessThan(result.score / 10);
+    });
+
+    it('should handle zero links edge case', () => {
+      const data: AuthorityLinksData = {
+        actualLinks: 0,
+        monthlySpend: 2000,
+        investmentMonths: 8
+      };
+
+      const result = calculateAuthorityLinksScore(data);
       expect(result.normalizedScore).toBe(1);
+      expect(result.score).toBe(0);
     });
   });
 
-  describe('Authority Domains Scoring', () => {
-    it('should calculate high score for excellent domain diversity', () => {
+  describe('Authority Domains Score', () => {
+    it('should score based on competitive benchmarking', () => {
       const data: AuthorityDomainsData = {
-        uniqueDomains: 600,
-        highAuthorityDomains: 120,
-        mediumAuthorityDomains: 240,
-        domainDiversity: 85,
-        competitorAverage: 500,
-        industryBenchmark: 550
+        clientDomains: 65,
+        competitorDomains: [78, 92, 65]
       };
 
       const result = calculateAuthorityDomainsScore(data);
       
-      expect(result.score).toBeGreaterThan(75);
-      expect(result.normalizedScore).toBeGreaterThanOrEqual(8);
-      expect(result.details.domainDistribution.total).toBe(600);
+      // Average competitor: 78.3, Client: 65, Performance: 83%
+      expect(result.normalizedScore).toBe(10); // >=80% = 10
+      expect(result.details.averageCompetitorDomains).toBe(78);
     });
 
-    it('should penalize low domain diversity', () => {
+    it('should score moderately for average performance', () => {
       const data: AuthorityDomainsData = {
-        uniqueDomains: 100,
-        highAuthorityDomains: 5,
-        mediumAuthorityDomains: 20,
-        domainDiversity: 45,
-        competitorAverage: 300,
-        industryBenchmark: 250
+        clientDomains: 38,
+        competitorDomains: [78, 92, 65]
       };
 
       const result = calculateAuthorityDomainsScore(data);
       
-      expect(result.insights).toContain('Critical: Poor domain diversity increases penalty risk');
+      // Average: 78.3, Client: 38, Performance: 48.5%
+      expect(result.normalizedScore).toBe(6); // 40-60% = 6
+    });
+
+    it('should apply red flags for massive gaps', () => {
+      const data: AuthorityDomainsData = {
+        clientDomains: 15,
+        competitorDomains: [100, 120, 110],
+        domainGrowthTrend: [14, 14, 15, 15, 15, 15]
+      };
+
+      const result = calculateAuthorityDomainsScore(data);
+      
+      // Average: 110, Client: 15, Performance: 13.6%
+      expect(result.normalizedScore).toBe(1); // <20% = 2, with penalties = 1
+      expect(result.redFlags).toBeDefined();
+      expect(result.redFlags!.some(f => f.type === 'MASSIVE_AUTHORITY_GAP')).toBe(true);
     });
   });
 
-  describe('Traffic Growth Scoring', () => {
-    it('should calculate high score for strong traffic growth', () => {
+  describe('Traffic Growth Score', () => {
+    it('should calculate based on annualized growth comparison', () => {
       const data: TrafficGrowthData = {
-        currentMonthlyTraffic: 150000,
-        trafficSixMonthsAgo: 75000,
-        trafficTwelveMonthsAgo: 50000,
-        growthRate: 200,
-        consistencyScore: 85,
-        competitorGrowthRate: 50,
-        industryAverage: 75
+        clientGrowth: 25,
+        competitorGrowths: [30, 35, 25],
+        investmentMonths: 8,
+        currentMonthlyTraffic: 25000
       };
 
       const result = calculateTrafficGrowthScore(data);
       
-      expect(result.score).toBeGreaterThan(80);
-      expect(result.normalizedScore).toBeGreaterThanOrEqual(8);
-      expect(result.insights).toContain('Outstanding traffic growth: 200% year-over-year');
+      // Annualized client: 37.5%, Avg competitor: 30%
+      // Relative performance: 1.25 (25% better)
+      expect(result.normalizedScore).toBe(8); // 20% better = 8
     });
 
-    it('should handle traffic decline appropriately', () => {
+    it('should handle stagnant growth with penalties', () => {
       const data: TrafficGrowthData = {
-        currentMonthlyTraffic: 8000,
-        trafficSixMonthsAgo: 10000,
-        trafficTwelveMonthsAgo: 12000,
-        growthRate: -33,
-        consistencyScore: 40,
-        competitorGrowthRate: 25,
-        industryAverage: 20
+        clientGrowth: 0,
+        competitorGrowths: [40, 50, 45],
+        investmentMonths: 12,
+        currentMonthlyTraffic: 10000,
+        topKeywordsDependency: 0.7
       };
 
       const result = calculateTrafficGrowthScore(data);
       
-      expect(result.score).toBeLessThan(30);
-      expect(result.insights).toContain('Traffic decline detected - immediate optimization required');
+      // No growth vs 45% competitor average
+      expect(result.normalizedScore).toBeLessThan(3);
+      expect(result.redFlags).toBeDefined();
+      expect(result.redFlags!.some(f => f.type === 'STAGNANT_PROGRESS')).toBe(true);
     });
   });
 
-  describe('Ranking Improvements Scoring', () => {
-    it('should calculate high score for strong ranking performance', () => {
+  describe('Ranking Improvements Score', () => {
+    it('should calculate based on position value improvements', () => {
       const data: RankingImprovementsData = {
-        totalKeywords: 500,
-        keywordsInTop3: 100,
-        keywordsInTop10: 200,
-        keywordsInTop20: 300,
-        averagePositionChange: 8,
-        newRankingKeywords: 100,
-        competitorComparison: {
-          betterRankings: 150,
-          worseRankings: 50,
-          totalSharedKeywords: 200
-        }
+        rankingChanges: [
+          { keyword: 'service near me', oldPosition: 15, newPosition: 4 },
+          { keyword: 'best service', oldPosition: 25, newPosition: 8 },
+          { keyword: 'service reviews', oldPosition: 5, newPosition: 2 }
+        ],
+        totalKeywords: 3,
+        investmentMonths: 10
       };
 
       const result = calculateRankingImprovementsScore(data);
       
-      expect(result.score).toBeGreaterThan(70);
-      expect(result.details.rankingDistribution.percentages.top3).toBe(20);
-      expect(result.insights).toContain('Excellent top 3 rankings: 20.0% of keywords');
+      // Total improvement value: 12, Total possible: 18
+      // Performance: 66.7%
+      expect(result.normalizedScore).toBeCloseTo(6.7, 1);
     });
 
-    it('should handle no shared keywords with competitors', () => {
+    it('should handle declining rankings', () => {
       const data: RankingImprovementsData = {
-        totalKeywords: 100,
-        keywordsInTop3: 5,
-        keywordsInTop10: 15,
-        keywordsInTop20: 30,
-        averagePositionChange: 2,
-        newRankingKeywords: 10,
-        competitorComparison: {
-          betterRankings: 0,
-          worseRankings: 0,
-          totalSharedKeywords: 0
-        }
+        rankingChanges: [
+          { keyword: 'main service', oldPosition: 5, newPosition: 12 },
+          { keyword: 'service cost', oldPosition: 8, newPosition: 15 },
+          { keyword: 'service provider', oldPosition: 3, newPosition: 7 }
+        ],
+        totalKeywords: 3,
+        investmentMonths: 12
       };
 
       const result = calculateRankingImprovementsScore(data);
       
-      expect(result.insights).toContain('Limited keyword overlap with competitors - unique strategy detected');
+      // All rankings declined
+      expect(result.normalizedScore).toBeLessThan(3);
+      expect(result.redFlags).toBeDefined();
     });
   });
 
-  describe('AI Visibility Scoring', () => {
-    it('should calculate high score for strong AI presence', () => {
+  describe('AI Visibility Score', () => {
+    it('should score based on keyword mention positions', () => {
       const data: AIVisibilityData = {
-        brandMentions: 40,
-        positiveSentiment: 92,
-        recommendationRate: 55,
-        competitorMentions: new Map([
-          ['Competitor1', 30],
-          ['Competitor2', 25],
-          ['Competitor3', 20]
-        ]),
-        totalQueriesTested: 100,
-        industryContext: 'Leading expert in the industry, trusted solution provider recommended by professionals'
+        keywordResults: [
+          { keyword: 'best service provider', mentioned: true, position: 3 },
+          { keyword: 'service reviews', mentioned: true, position: 7 },
+          { keyword: 'service cost', mentioned: false, followUpMentioned: true },
+          { keyword: 'service near me', mentioned: false, brandRecognized: true },
+          { keyword: 'quality service', mentioned: false }
+        ],
+        investmentMonths: 10
       };
 
       const result = calculateAIVisibilityScore(data);
       
-      expect(result.score).toBeGreaterThan(75);
-      expect(result.normalizedScore).toBeGreaterThanOrEqual(8);
-      expect(result.insights).toContain('Excellent AI visibility: mentioned in 40% of queries');
+      // Scores: 20 + 15 + 10 + 5 + 0 = 50/100 = 50%
+      expect(result.normalizedScore).toBe(5);
+      expect(result.details.totalScore).toBe(50);
     });
 
-    it('should handle no AI visibility', () => {
+    it('should apply penalties for AI invisibility', () => {
       const data: AIVisibilityData = {
-        brandMentions: 0,
-        positiveSentiment: 0,
-        recommendationRate: 0,
-        competitorMentions: new Map([
-          ['Competitor1', 50],
-          ['Competitor2', 45]
-        ]),
-        totalQueriesTested: 100,
-        industryContext: 'Service provider in the industry'
+        keywordResults: [
+          { keyword: 'service 1', mentioned: false },
+          { keyword: 'service 2', mentioned: false },
+          { keyword: 'service 3', mentioned: false },
+          { keyword: 'service 4', mentioned: false },
+          { keyword: 'service 5', mentioned: false, brandRecognized: true }
+        ],
+        investmentMonths: 12
       };
 
       const result = calculateAIVisibilityScore(data);
       
-      expect(result.score).toBeLessThan(20);
-      expect(result.insights).toContain('No AI visibility detected - brand not mentioned in any queries');
+      // Only 5 points out of 100
+      expect(result.normalizedScore).toBe(1);
+      expect(result.redFlags).toBeDefined();
+      expect(result.redFlags!.some(f => f.type === 'AI_INVISIBILITY')).toBe(true);
     });
   });
 
   describe('Overall Score Calculation', () => {
     it('should calculate weighted overall score correctly', () => {
-      const authorityLinksData: AuthorityLinksData = {
-        totalLinks: 800,
-        highAuthorityLinks: 120,
-        mediumAuthorityLinks: 300,
-        lowAuthorityLinks: 380,
-        linkGrowthRate: 5,
-        competitorAverage: 700,
-        industryBenchmark: 750
+      const authorityLinks: AuthorityLinksData = {
+        actualLinks: 50,
+        monthlySpend: 4000,
+        investmentMonths: 10
       };
 
-      const authorityDomainsData: AuthorityDomainsData = {
-        uniqueDomains: 400,
-        highAuthorityDomains: 60,
-        mediumAuthorityDomains: 160,
-        domainDiversity: 75,
-        competitorAverage: 350,
-        industryBenchmark: 380
+      const authorityDomains: AuthorityDomainsData = {
+        clientDomains: 45,
+        competitorDomains: [65, 70, 60]
       };
 
-      const trafficGrowthData: TrafficGrowthData = {
-        currentMonthlyTraffic: 50000,
-        trafficSixMonthsAgo: 35000,
-        trafficTwelveMonthsAgo: 25000,
-        growthRate: 100,
-        consistencyScore: 75,
-        competitorGrowthRate: 40,
-        industryAverage: 50
+      const trafficGrowth: TrafficGrowthData = {
+        clientGrowth: 45,
+        competitorGrowths: [25, 30, 20],
+        investmentMonths: 10,
+        currentMonthlyTraffic: 30000
       };
 
-      const rankingImprovementsData: RankingImprovementsData = {
-        totalKeywords: 300,
-        keywordsInTop3: 45,
-        keywordsInTop10: 90,
-        keywordsInTop20: 150,
-        averagePositionChange: 5,
-        newRankingKeywords: 45,
-        competitorComparison: {
-          betterRankings: 100,
-          worseRankings: 80,
-          totalSharedKeywords: 180
-        }
+      const rankingImprovements: RankingImprovementsData = {
+        rankingChanges: [
+          { keyword: 'test 1', oldPosition: 20, newPosition: 8 },
+          { keyword: 'test 2', oldPosition: 50, newPosition: 15 }
+        ],
+        totalKeywords: 2,
+        investmentMonths: 10
       };
 
-      const aiVisibilityData: AIVisibilityData = {
-        brandMentions: 25,
-        positiveSentiment: 85,
-        recommendationRate: 35,
-        competitorMentions: new Map([['Competitor1', 30]]),
-        totalQueriesTested: 100,
-        industryContext: 'Trusted provider recommended by experts'
+      const aiVisibility: AIVisibilityData = {
+        keywordResults: [
+          { keyword: 'test', mentioned: true, position: 5 },
+          { keyword: 'test 2', mentioned: false, followUpMentioned: true }
+        ],
+        investmentMonths: 10
       };
 
       const result = calculateOverallScore(
-        authorityLinksData,
-        authorityDomainsData,
-        trafficGrowthData,
-        rankingImprovementsData,
-        aiVisibilityData
+        authorityLinks,
+        authorityDomains,
+        trafficGrowth,
+        rankingImprovements,
+        aiVisibility
       );
 
-      expect(result.weightedScore).toBeGreaterThan(50);
-      expect(result.normalizedScore).toBeGreaterThanOrEqual(5);
-      expect(result.performanceLevel).toBe('Excellent');
+      expect(result.normalizedScore).toBeGreaterThan(5);
+      expect(result.normalizedScore).toBeLessThanOrEqual(10);
+      expect(result.performanceLevel).toBeDefined();
       expect(result.recommendations.length).toBeGreaterThan(0);
     });
 
-    it('should identify performance level correctly', () => {
-      // Test data that should result in "Average" performance
-      const authorityLinksData: AuthorityLinksData = {
-        totalLinks: 200,
-        highAuthorityLinks: 10,
-        mediumAuthorityLinks: 40,
-        lowAuthorityLinks: 150,
-        linkGrowthRate: 2,
-        competitorAverage: 400,
-        industryBenchmark: 350
+    it('should validate minimum requirements', () => {
+      const validation1 = validateScoreInputs({
+        monthlySpend: 500,
+        investmentMonths: 8
+      });
+
+      expect(validation1.isValid).toBe(false);
+      expect(validation1.errors).toContain('Minimum $1000/month required for analysis');
+
+      const validation2 = validateScoreInputs({
+        monthlySpend: 2000,
+        investmentMonths: 4
+      });
+
+      expect(validation2.isValid).toBe(false);
+      expect(validation2.errors).toContain('Minimum 6 months investment required for analysis');
+    });
+
+    it('should detect high spend poor results red flag', () => {
+      const authorityLinks: AuthorityLinksData = {
+        actualLinks: 10,
+        monthlySpend: 6000,
+        investmentMonths: 12
       };
 
-      const authorityDomainsData: AuthorityDomainsData = {
-        uniqueDomains: 150,
-        highAuthorityDomains: 15,
-        mediumAuthorityDomains: 45,
-        domainDiversity: 60,
-        competitorAverage: 250,
-        industryBenchmark: 200
+      const authorityDomains: AuthorityDomainsData = {
+        clientDomains: 20,
+        competitorDomains: [100, 120, 110]
       };
 
-      const trafficGrowthData: TrafficGrowthData = {
-        currentMonthlyTraffic: 15000,
-        trafficSixMonthsAgo: 12000,
-        trafficTwelveMonthsAgo: 10000,
-        growthRate: 50,
-        consistencyScore: 65,
-        competitorGrowthRate: 60,
-        industryAverage: 55
+      const trafficGrowth: TrafficGrowthData = {
+        clientGrowth: 5,
+        competitorGrowths: [50, 60, 55],
+        investmentMonths: 12,
+        currentMonthlyTraffic: 5000
       };
 
-      const rankingImprovementsData: RankingImprovementsData = {
-        totalKeywords: 150,
-        keywordsInTop3: 15,
-        keywordsInTop10: 30,
-        keywordsInTop20: 60,
-        averagePositionChange: 3,
-        newRankingKeywords: 15,
-        competitorComparison: {
-          betterRankings: 40,
-          worseRankings: 60,
-          totalSharedKeywords: 100
-        }
+      const rankingImprovements: RankingImprovementsData = {
+        rankingChanges: [],
+        totalKeywords: 50,
+        investmentMonths: 12
       };
 
-      const aiVisibilityData: AIVisibilityData = {
-        brandMentions: 10,
-        positiveSentiment: 70,
-        recommendationRate: 15,
-        competitorMentions: new Map([['Competitor1', 20]]),
-        totalQueriesTested: 100,
-        industryContext: 'Service provider'
+      const aiVisibility: AIVisibilityData = {
+        keywordResults: [
+          { keyword: 'test', mentioned: false },
+          { keyword: 'test 2', mentioned: false }
+        ],
+        investmentMonths: 12
       };
 
       const result = calculateOverallScore(
-        authorityLinksData,
-        authorityDomainsData,
-        trafficGrowthData,
-        rankingImprovementsData,
-        aiVisibilityData
+        authorityLinks,
+        authorityDomains,
+        trafficGrowth,
+        rankingImprovements,
+        aiVisibility
       );
 
-      expect(result.performanceLevel).toBe('Good');
-      expect(result.recommendations).toContain('Good SEO performance with solid ROI - room for strategic improvements');
+      expect(result.redFlags.some(f => f.type === 'HIGH_SPEND_POOR_RESULTS')).toBe(true);
+      expect(result.performanceLevel).toBe('Very Poor');
     });
   });
 
-  describe('Partial Score Calculation', () => {
-    it('should calculate partial score with missing data', () => {
-      const partialData = {
-        authorityLinks: {
-          totalLinks: 500,
-          highAuthorityLinks: 50,
-          mediumAuthorityLinks: 150,
-          lowAuthorityLinks: 300,
-          linkGrowthRate: 3,
-          competitorAverage: 400,
-          industryBenchmark: 450
-        } as AuthorityLinksData,
-        trafficGrowth: {
-          currentMonthlyTraffic: 25000,
-          trafficSixMonthsAgo: 20000,
-          trafficTwelveMonthsAgo: 15000,
-          growthRate: 66,
-          consistencyScore: 70,
-          competitorGrowthRate: 50,
-          industryAverage: 45
-        } as TrafficGrowthData
-        // Missing: authorityDomains, rankingImprovements, aiVisibility
+  describe('Complete Example Calculation', () => {
+    it('should match the documented example from specifications', () => {
+      const authorityLinks: AuthorityLinksData = {
+        actualLinks: 42,
+        monthlySpend: 4000,
+        investmentMonths: 10,
+        linkBreakdown: {
+          highQuality: 12,
+          mediumQuality: 20,
+          lowQuality: 10
+        }
       };
 
-      const result = calculatePartialScore(partialData);
+      const authorityDomains: AuthorityDomainsData = {
+        clientDomains: 38,
+        competitorDomains: [65, 70, 60]
+      };
 
-      expect(result.availableMetrics).toContain('Authority Links');
-      expect(result.availableMetrics).toContain('Traffic Growth');
-      expect(result.missingMetrics).toContain('Authority Domains');
-      expect(result.missingMetrics).toContain('Ranking Improvements');
-      expect(result.missingMetrics).toContain('AI Visibility');
-      expect(result.confidence).toBeCloseTo(55, 5); // 0.35 + 0.20 = 0.55 = 55%
-    });
+      const trafficGrowth: TrafficGrowthData = {
+        clientGrowth: 37.5, // 45% over 10 months = 54% annualized
+        competitorGrowths: [25, 30, 20],
+        investmentMonths: 10,
+        currentMonthlyTraffic: 35000
+      };
 
-    it('should handle empty data gracefully', () => {
-      const result = calculatePartialScore({});
+      const rankingImprovements: RankingImprovementsData = {
+        rankingChanges: [
+          { keyword: 'legal services', oldPosition: 15, newPosition: 8 },
+          { keyword: 'lawyer near me', oldPosition: 25, newPosition: 12 },
+          { keyword: 'attorney consultation', oldPosition: 50, newPosition: 18 }
+        ],
+        totalKeywords: 20,
+        investmentMonths: 10
+      };
 
-      expect(result.score).toBe(0);
-      expect(result.normalizedScore).toBe(1);
-      expect(result.confidence).toBe(0);
-      expect(result.missingMetrics.length).toBe(5);
+      const aiVisibility: AIVisibilityData = {
+        keywordResults: [
+          { keyword: 'best lawyer', mentioned: true, position: 4 },
+          { keyword: 'legal help', mentioned: true, position: 8 },
+          { keyword: 'attorney services', mentioned: false, followUpMentioned: true },
+          { keyword: 'law firm', mentioned: false },
+          { keyword: 'legal advice', mentioned: false }
+        ],
+        investmentMonths: 10
+      };
+
+      const result = calculateOverallScore(
+        authorityLinks,
+        authorityDomains,
+        trafficGrowth,
+        rankingImprovements,
+        aiVisibility
+      );
+
+      // Individual scores approximately:
+      // Authority Links: 7.0 (42/60 = 70%)
+      // Authority Domains: 5.8 (38/65 = 58%)
+      // Traffic Growth: ~9 (excellent relative performance)
+      // Ranking Improvements: varies based on calculation
+      // AI Visibility: 6.0 (3/5 keywords with varying scores)
+
+      expect(result.normalizedScore).toBeGreaterThan(6);
+      expect(result.normalizedScore).toBeLessThan(8);
+      expect(result.performanceLevel).toBe('Good');
     });
   });
 }); 

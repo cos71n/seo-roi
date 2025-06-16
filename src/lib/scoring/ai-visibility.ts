@@ -1,314 +1,224 @@
-import { AIVisibilityData, ScoreResult } from './types';
+import { AIVisibilityData, AIKeywordResult, ScoreResult, RedFlag } from './types';
 
 /**
  * AI Visibility Scoring Algorithm (10% weight)
- * 
- * Evaluates brand visibility in AI responses based on:
- * - Frequency of brand mentions in AI responses
- * - Positive sentiment and recommendations
- * - Comparison to competitor mentions
- * - Industry-specific context and relevance
+ * Tests visibility for top 5 target keywords through AI assistants
  */
-export function calculateAIVisibilityScore(
-  data: AIVisibilityData
-): ScoreResult {
+export function calculateAIVisibilityScore(data: AIVisibilityData): ScoreResult {
   const insights: string[] = [];
   const details: Record<string, any> = {};
+  const redFlags: RedFlag[] = [];
 
-  // Calculate mention frequency score (0-30 points)
-  const mentionScore = calculateMentionFrequencyScore(data, insights, details);
-
-  // Calculate sentiment and recommendation score (0-30 points)
-  const sentimentScore = calculateSentimentScore(data, insights, details);
-
-  // Calculate competitive visibility score (0-25 points)
-  const competitiveScore = calculateCompetitiveVisibilityScore(data, insights, details);
-
-  // Calculate industry relevance score (0-15 points)
-  const relevanceScore = calculateIndustryRelevanceScore(data, insights, details);
-
-  // Total raw score (0-100)
-  const rawScore = mentionScore + sentimentScore + competitiveScore + relevanceScore;
-
-  // Normalize to 1-10 scale
-  const normalizedScore = normalizeScore(rawScore);
-
-  // Add overall insights
-  generateAIVisibilityInsights(rawScore, data, insights);
+  // Calculate total score based on keyword results
+  let totalScore = 0;
+  const maxScorePerKeyword = 20;
+  const maxPossibleScore = data.keywordResults.length * maxScorePerKeyword;
+  
+  // Track performance metrics
+  let mentionedCount = 0;
+  let top5Count = 0;
+  let top10Count = 0;
+  let followUpCount = 0;
+  let recognizedCount = 0;
+  
+  data.keywordResults.forEach(result => {
+    let keywordScore = 0;
+    
+    if (result.mentioned && result.position && result.position <= 5) {
+      keywordScore = 20; // Top 5 mention
+      top5Count++;
+      mentionedCount++;
+    } else if (result.mentioned && result.position && result.position <= 10) {
+      keywordScore = 15; // Top 10 mention
+      top10Count++;
+      mentionedCount++;
+    } else if (result.followUpMentioned) {
+      keywordScore = 10; // Mentioned after follow-up
+      followUpCount++;
+    } else if (result.brandRecognized) {
+      keywordScore = 5; // Brand recognized but not recommended
+      recognizedCount++;
+    }
+    // 0 points if not mentioned or recognized
+    
+    totalScore += keywordScore;
+  });
+  
+  // Calculate percentage and normalize to 1-10 scale
+  const percentage = maxPossibleScore > 0 ? (totalScore / maxPossibleScore) * 100 : 0;
+  let normalizedScore = Math.max(1, Math.min(10, percentage / 10));
+  
+  // Detect red flags
+  const aiRedFlags = detectAIVisibilityRedFlags(data, percentage, mentionedCount);
+  redFlags.push(...aiRedFlags);
+  
+  // Apply red flag penalties
+  const totalPenalty = redFlags.reduce((sum, flag) => sum + flag.scorePenalty, 0);
+  const adjustedScore = Math.max(1, normalizedScore + totalPenalty);
+  
+  // Generate insights
+  generateAIInsights(
+    data,
+    percentage,
+    mentionedCount,
+    top5Count,
+    top10Count,
+    followUpCount,
+    recognizedCount,
+    insights
+  );
+  
+  // Add details
+  details.totalScore = totalScore;
+  details.maxPossibleScore = maxPossibleScore;
+  details.scorePercentage = percentage;
+  details.keywordBreakdown = data.keywordResults.map(result => {
+    let score = 0;
+    let status = 'Not mentioned';
+    
+    if (result.mentioned && result.position && result.position <= 5) {
+      score = 20;
+      status = `Top ${result.position} mention`;
+    } else if (result.mentioned && result.position && result.position <= 10) {
+      score = 15;
+      status = `Position ${result.position} mention`;
+    } else if (result.followUpMentioned) {
+      score = 10;
+      status = 'Mentioned on follow-up';
+    } else if (result.brandRecognized) {
+      score = 5;
+      status = 'Brand recognized only';
+    }
+    
+    return {
+      keyword: result.keyword,
+      score,
+      status,
+      mentioned: result.mentioned,
+      position: result.position
+    };
+  });
+  
+  details.performanceMetrics = {
+    mentionedCount,
+    top5Count,
+    top10Count,
+    followUpCount,
+    recognizedCount,
+    mentionRate: (mentionedCount / data.keywordResults.length) * 100,
+    top5Rate: (top5Count / data.keywordResults.length) * 100
+  };
 
   return {
-    score: rawScore,
-    normalizedScore,
-    details: {
-      ...details,
-      mentionScore,
-      sentimentScore,
-      competitiveScore,
-      relevanceScore,
-      aiMetrics: {
-        mentionRate: (data.brandMentions / data.totalQueriesTested) * 100,
-        positiveSentiment: data.positiveSentiment,
-        recommendationRate: data.recommendationRate,
-        queriesTested: data.totalQueriesTested
-      }
-    },
-    insights
+    score: percentage,
+    normalizedScore: adjustedScore,
+    adjustedScore: adjustedScore !== normalizedScore ? adjustedScore : undefined,
+    details,
+    insights,
+    redFlags: redFlags.length > 0 ? redFlags : undefined
   };
 }
 
-function calculateMentionFrequencyScore(
+function detectAIVisibilityRedFlags(
   data: AIVisibilityData,
-  insights: string[],
-  details: Record<string, any>
-): number {
-  let score = 0;
-
-  const mentionRate = (data.brandMentions / data.totalQueriesTested) * 100;
-
-  // Brand mention frequency - up to 30 points
-  if (mentionRate >= 40) {
-    score = 30;
-    insights.push(`Excellent AI visibility: mentioned in ${mentionRate.toFixed(0)}% of queries`);
-  } else if (mentionRate >= 30) {
-    score = 25;
-    insights.push(`Strong AI presence: mentioned in ${mentionRate.toFixed(0)}% of queries`);
-  } else if (mentionRate >= 20) {
-    score = 20;
-    insights.push(`Good AI visibility: mentioned in ${mentionRate.toFixed(0)}% of queries`);
-  } else if (mentionRate >= 10) {
-    score = 15;
-    insights.push(`Moderate AI presence: ${mentionRate.toFixed(0)}% mention rate`);
-  } else if (mentionRate >= 5) {
-    score = 10;
-    insights.push(`Limited AI visibility: only ${mentionRate.toFixed(0)}% mention rate`);
-  } else if (mentionRate > 0) {
-    score = 5;
-    insights.push(`Very low AI visibility: ${mentionRate.toFixed(1)}% mention rate`);
-  } else {
-    score = 0;
-    insights.push('No AI visibility detected - brand not mentioned in any queries');
-  }
-
-  details.mentionMetrics = {
-    mentionRate,
-    totalMentions: data.brandMentions,
-    mentionGap: Math.max(0, Math.round(data.totalQueriesTested * 0.3 - data.brandMentions))
-  };
-
-  return score;
-}
-
-function calculateSentimentScore(
-  data: AIVisibilityData,
-  insights: string[],
-  details: Record<string, any>
-): number {
-  let score = 0;
-
-  // Positive sentiment score - up to 15 points
-  if (data.positiveSentiment >= 90) {
-    score += 15;
-    insights.push(`Outstanding reputation: ${data.positiveSentiment}% positive sentiment`);
-  } else if (data.positiveSentiment >= 80) {
-    score += 12;
-    insights.push(`Strong positive sentiment: ${data.positiveSentiment}%`);
-  } else if (data.positiveSentiment >= 70) {
-    score += 9;
-    insights.push(`Good sentiment score: ${data.positiveSentiment}% positive`);
-  } else if (data.positiveSentiment >= 60) {
-    score += 6;
-    insights.push(`Mixed sentiment: ${data.positiveSentiment}% positive`);
-  } else {
-    score += 3;
-    insights.push(`Low positive sentiment: ${data.positiveSentiment}% - reputation management needed`);
-  }
-
-  // Recommendation rate - up to 15 points
-  if (data.recommendationRate >= 50) {
-    score += 15;
-    insights.push(`Frequently recommended: ${data.recommendationRate}% recommendation rate`);
-  } else if (data.recommendationRate >= 35) {
-    score += 12;
-    insights.push(`Often recommended: ${data.recommendationRate}% recommendation rate`);
-  } else if (data.recommendationRate >= 20) {
-    score += 9;
-    insights.push(`Sometimes recommended: ${data.recommendationRate}% rate`);
-  } else if (data.recommendationRate >= 10) {
-    score += 6;
-    insights.push(`Occasionally recommended: ${data.recommendationRate}% rate`);
-  } else {
-    score += 3;
-    insights.push(`Rarely recommended: ${data.recommendationRate}% - authority building needed`);
-  }
-
-  details.sentimentMetrics = {
-    positiveSentiment: data.positiveSentiment,
-    recommendationRate: data.recommendationRate,
-    reputationScore: (data.positiveSentiment + data.recommendationRate) / 2
-  };
-
-  return score;
-}
-
-function calculateCompetitiveVisibilityScore(
-  data: AIVisibilityData,
-  insights: string[],
-  details: Record<string, any>
-): number {
-  let score = 0;
-
-  // Get top competitor mentions
-  const competitorMentions = Array.from(data.competitorMentions.entries())
-    .sort((a, b) => b[1] - a[1]);
+  percentage: number,
+  mentionedCount: number
+): RedFlag[] {
+  const redFlags: RedFlag[] = [];
   
-  const topCompetitor = competitorMentions[0];
-  const averageCompetitorMentions = competitorMentions.length > 0
-    ? competitorMentions.reduce((sum, [_, mentions]) => sum + mentions, 0) / competitorMentions.length
-    : 0;
-
-  // Compare to average competitor mentions - up to 25 points
-  if (data.brandMentions > averageCompetitorMentions * 1.5) {
-    score = 25;
-    insights.push('Leading AI visibility among competitors');
-  } else if (data.brandMentions >= averageCompetitorMentions) {
-    score = 20;
-    insights.push('Competitive AI visibility with market leaders');
-  } else if (data.brandMentions >= averageCompetitorMentions * 0.75) {
-    score = 15;
-    insights.push('Close to competitor AI visibility levels');
-  } else if (data.brandMentions >= averageCompetitorMentions * 0.5) {
-    score = 10;
-    insights.push('Behind competitors in AI visibility');
-  } else {
-    score = 5;
-    insights.push('Significantly trailing competitors in AI presence');
+  // Red Flag: AI invisibility after investment
+  if (data.investmentMonths >= 6 && percentage < 20) {
+    redFlags.push({
+      type: 'AI_INVISIBILITY',
+      severity: 'MEDIUM',
+      message: 'Not recognized by AI assistants for target keywords. Brand authority issues.',
+      scorePenalty: -1
+    });
   }
-
-  // Identify specific competitive gaps
-  if (topCompetitor && topCompetitor[1] > data.brandMentions) {
-    insights.push(`${topCompetitor[0]} mentioned ${topCompetitor[1] - data.brandMentions} times more`);
-  }
-
-  details.competitiveMetrics = {
-    brandMentions: data.brandMentions,
-    averageCompetitorMentions,
-    topCompetitor: topCompetitor ? { name: topCompetitor[0], mentions: topCompetitor[1] } : null,
-    competitivePosition: competitorMentions.findIndex(([name]) => name === 'YourBrand') + 1 || competitorMentions.length + 1,
-    totalCompetitors: competitorMentions.length
-  };
-
-  return score;
-}
-
-function calculateIndustryRelevanceScore(
-  data: AIVisibilityData,
-  insights: string[],
-  details: Record<string, any>
-): number {
-  let score = 0;
-
-  // Industry context relevance - up to 15 points
-  const industryKeywords = extractIndustryKeywords(data.industryContext);
-  const relevanceIndicators = [
-    'leader', 'expert', 'trusted', 'recommended', 'top-rated', 
-    'best', 'preferred', 'specialist', 'authority', 'go-to'
-  ];
-
-  const relevanceCount = relevanceIndicators.filter(indicator => 
-    data.industryContext.toLowerCase().includes(indicator)
-  ).length;
-
-  if (relevanceCount >= 5) {
-    score = 15;
-    insights.push('Recognized as industry authority in AI responses');
-  } else if (relevanceCount >= 3) {
-    score = 12;
-    insights.push('Strong industry positioning in AI context');
-  } else if (relevanceCount >= 2) {
-    score = 9;
-    insights.push('Moderate industry recognition in AI');
-  } else if (relevanceCount >= 1) {
-    score = 6;
-    insights.push('Some industry relevance in AI responses');
-  } else {
-    score = 3;
-    insights.push('Limited industry-specific recognition in AI');
-  }
-
-  details.relevanceMetrics = {
-    industryKeywords: industryKeywords.length,
-    relevanceIndicators: relevanceCount,
-    industryContext: data.industryContext.substring(0, 100) + '...'
-  };
-
-  return score;
-}
-
-function extractIndustryKeywords(context: string): string[] {
-  // Extract industry-specific keywords from context
-  const words = context.toLowerCase().split(/\s+/);
-  const industryTerms = [
-    'service', 'solution', 'provider', 'company', 'firm',
-    'agency', 'consultant', 'specialist', 'expert', 'professional'
-  ];
   
-  return words.filter(word => industryTerms.some(term => word.includes(term)));
+  // Red Flag: Zero mentions
+  if (mentionedCount === 0 && data.investmentMonths >= 8) {
+    redFlags.push({
+      type: 'NO_AI_PRESENCE',
+      severity: 'HIGH',
+      message: 'Complete absence from AI recommendations despite SEO investment. Missing future traffic opportunities.',
+      scorePenalty: -1.5
+    });
+  }
+  
+  return redFlags;
 }
 
-function normalizeScore(rawScore: number): number {
-  // Convert 0-100 to 1-10 scale with proper distribution
-  if (rawScore >= 90) return 10;
-  if (rawScore >= 80) return 9;
-  if (rawScore >= 70) return 8;
-  if (rawScore >= 60) return 7;
-  if (rawScore >= 50) return 6;
-  if (rawScore >= 40) return 5;
-  if (rawScore >= 30) return 4;
-  if (rawScore >= 20) return 3;
-  if (rawScore >= 10) return 2;
-  return 1;
-}
-
-function generateAIVisibilityInsights(
-  score: number,
+function generateAIInsights(
   data: AIVisibilityData,
+  percentage: number,
+  mentionedCount: number,
+  top5Count: number,
+  top10Count: number,
+  followUpCount: number,
+  recognizedCount: number,
   insights: string[]
 ): void {
-  // Overall AI visibility assessment
-  if (score >= 80) {
-    insights.push('EXCELLENT: Strong AI visibility and brand authority');
-    insights.push('Strategy: Maintain thought leadership and content quality');
-  } else if (score >= 60) {
-    insights.push('GOOD: Growing AI presence with positive recognition');
-    insights.push('Focus: Increase content depth and E-E-A-T signals');
-  } else if (score >= 40) {
-    insights.push('AVERAGE: Some AI visibility but improvement needed');
-    insights.push('Priority: Build authoritative content and earn quality mentions');
-  } else if (score >= 20) {
-    insights.push('BELOW AVERAGE: Limited AI visibility impacting discoverability');
-    insights.push('Action: Create comprehensive, cited content on core topics');
-  } else {
-    insights.push('POOR: Minimal to no AI visibility');
-    insights.push('Urgent: Establish topical authority through expert content');
-  }
-
-  // Calculate missed opportunity
-  const potentialMentions = Math.round(data.totalQueriesTested * 0.3);
-  const mentionGap = potentialMentions - data.brandMentions;
+  const totalKeywords = data.keywordResults.length;
   
-  if (mentionGap > 0) {
-    const potentialTrafficIncrease = mentionGap * 50; // Estimate 50 visits per AI mention
-    insights.push(`Opportunity: ${mentionGap} additional AI mentions could drive ${potentialTrafficIncrease} monthly visits`);
+  // Overall performance
+  if (percentage >= 60) {
+    insights.push(`Strong AI visibility: ${percentage.toFixed(0)}% score across ${totalKeywords} target keywords.`);
+  } else if (percentage >= 40) {
+    insights.push(`Moderate AI presence: ${percentage.toFixed(0)}% visibility score indicates room for improvement.`);
+  } else if (percentage >= 20) {
+    insights.push(`Limited AI visibility: ${percentage.toFixed(0)}% score suggests brand authority gaps.`);
+  } else {
+    insights.push(`Poor AI visibility: Only ${percentage.toFixed(0)}% score - missing AI-driven traffic.`);
   }
-
-  // AI optimization recommendations
-  if (data.brandMentions < data.totalQueriesTested * 0.2) {
-    insights.push('Tactic: Create definitive guides and FAQ content');
-    insights.push('Tactic: Earn mentions from authoritative industry sources');
+  
+  // Mention breakdown
+  if (mentionedCount > 0) {
+    insights.push(`Direct mentions: ${mentionedCount} of ${totalKeywords} keywords (${((mentionedCount/totalKeywords)*100).toFixed(0)}%).`);
+    
+    if (top5Count > 0) {
+      insights.push(`Premium placement: ${top5Count} keywords in top 5 positions.`);
+    }
+  } else {
+    insights.push('No direct mentions in AI responses for any target keywords.');
   }
-
-  if (data.recommendationRate < 30) {
-    insights.push('Tactic: Showcase expertise through case studies and data');
-    insights.push('Tactic: Build stronger review and testimonial presence');
+  
+  // Follow-up performance
+  if (followUpCount > 0) {
+    insights.push(`Secondary visibility: ${followUpCount} keywords mentioned after follow-up questions.`);
+  }
+  
+  // Brand recognition
+  if (recognizedCount > 0 && mentionedCount === 0) {
+    insights.push(`Brand awareness exists but not recommended - authority building needed.`);
+  }
+  
+  // Competitive implications
+  const mentionRate = (mentionedCount / totalKeywords) * 100;
+  if (mentionRate < 20) {
+    insights.push('Competitors likely dominating AI recommendations in your space.');
+  } else if (mentionRate >= 60) {
+    insights.push('Strong competitive advantage in AI-driven search results.');
+  }
+  
+  // Recommendations
+  if (percentage < 40) {
+    insights.push('Priority: Create comprehensive, cited content on core service topics.');
+    insights.push('Focus: Build E-E-A-T signals through case studies and expert content.');
+  }
+  
+  if (top5Count === 0 && mentionedCount > 0) {
+    insights.push('Opportunity: Improve content depth to achieve top 5 AI recommendations.');
+  }
+  
+  // Future traffic impact
+  if (mentionedCount < totalKeywords * 0.4) {
+    const missedKeywords = Math.ceil(totalKeywords * 0.4 - mentionedCount);
+    insights.push(`AI traffic opportunity: Getting ${missedKeywords} more keywords mentioned could drive significant future traffic.`);
+  }
+  
+  // Strategic insights
+  if (data.investmentMonths >= 12 && percentage < 30) {
+    insights.push('Long-term risk: Low AI visibility will impact future organic traffic as AI adoption grows.');
   }
 } 

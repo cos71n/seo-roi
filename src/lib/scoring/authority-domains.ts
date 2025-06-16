@@ -1,275 +1,166 @@
-import { AuthorityDomainsData, ScoreResult } from './types';
+import { AuthorityDomainsData, ScoreResult, RedFlag } from './types';
 
 /**
  * Authority Domains Scoring Algorithm (20% weight)
- * 
- * Evaluates the quality and diversity of referring domains based on:
- * - Number of unique referring domains
- * - Distribution of domain authority levels
- * - Domain diversity (avoiding over-reliance on few domains)
- * - Comparison to competitors and industry standards
+ * Based on competitive benchmarking against top 3 competitors
  */
-export function calculateAuthorityDomainsScore(
-  data: AuthorityDomainsData
-): ScoreResult {
+export function calculateAuthorityDomainsScore(data: AuthorityDomainsData): ScoreResult {
   const insights: string[] = [];
   const details: Record<string, any> = {};
+  const redFlags: RedFlag[] = [];
 
-  // Calculate domain volume score (0-30 points)
-  const volumeScore = calculateVolumeScore(data, insights, details);
-
-  // Calculate domain quality score (0-35 points)
-  const qualityScore = calculateDomainQualityScore(data, insights, details);
-
-  // Calculate diversity score (0-20 points)
-  const diversityScore = calculateDiversityScore(data, insights, details);
-
-  // Calculate competitive position score (0-15 points)
-  const competitiveScore = calculateCompetitiveDomainsScore(data, insights, details);
-
-  // Total raw score (0-100)
-  const rawScore = volumeScore + qualityScore + diversityScore + competitiveScore;
-
-  // Normalize to 1-10 scale
-  const normalizedScore = normalizeScore(rawScore);
-
-  // Add overall insights
-  generateDomainInsights(rawScore, data, insights);
+  // Calculate average competitor domains
+  const averageCompetitorDomains = data.competitorDomains.reduce((sum, count) => sum + count, 0) / data.competitorDomains.length;
+  
+  // Calculate percentage relative to competitors
+  const percentage = (data.clientDomains / averageCompetitorDomains) * 100;
+  
+  // Convert to 1-10 scale based on competitive position
+  let normalizedScore: number;
+  if (percentage >= 80) {
+    normalizedScore = 10;
+  } else if (percentage >= 60) {
+    normalizedScore = 8;
+  } else if (percentage >= 40) {
+    normalizedScore = 6;
+  } else if (percentage >= 20) {
+    normalizedScore = 4;
+  } else {
+    normalizedScore = 2;
+  }
+  
+  // Detect competitive position red flags
+  const domainRedFlags = detectDomainRedFlags(data, averageCompetitorDomains, percentage);
+  redFlags.push(...domainRedFlags);
+  
+  // Apply red flag penalties
+  const totalPenalty = redFlags.reduce((sum, flag) => sum + flag.scorePenalty, 0);
+  const adjustedScore = Math.max(1, normalizedScore + totalPenalty);
+  
+  // Generate insights
+  generateDomainInsights(data, averageCompetitorDomains, percentage, insights);
+  
+  // Add details
+  details.clientDomains = data.clientDomains;
+  details.competitorDomains = data.competitorDomains;
+  details.averageCompetitorDomains = Math.round(averageCompetitorDomains);
+  details.performancePercentage = percentage;
+  details.domainGap = Math.max(0, Math.round(averageCompetitorDomains - data.clientDomains));
+  
+  // Add individual competitor comparison
+  details.competitorComparison = data.competitorDomains.map((domains, index) => ({
+    competitor: `Competitor ${index + 1}`,
+    domains: domains,
+    clientRatio: (data.clientDomains / domains) * 100
+  }));
 
   return {
-    score: rawScore,
-    normalizedScore,
-    details: {
-      ...details,
-      volumeScore,
-      qualityScore,
-      diversityScore,
-      competitiveScore,
-      domainDistribution: {
-        highAuthority: data.highAuthorityDomains,
-        mediumAuthority: data.mediumAuthorityDomains,
-        lowAuthority: data.uniqueDomains - data.highAuthorityDomains - data.mediumAuthorityDomains,
-        total: data.uniqueDomains
-      }
-    },
-    insights
+    score: percentage,
+    normalizedScore: adjustedScore,
+    adjustedScore: adjustedScore !== normalizedScore ? adjustedScore : undefined,
+    details,
+    insights,
+    redFlags: redFlags.length > 0 ? redFlags : undefined
   };
 }
 
-function calculateVolumeScore(
+function detectDomainRedFlags(
   data: AuthorityDomainsData,
-  insights: string[],
-  details: Record<string, any>
-): number {
-  let score = 0;
-
-  // Unique domain count - up to 30 points
-  if (data.uniqueDomains >= 500) {
-    score = 30;
-    insights.push(`Excellent domain diversity with ${data.uniqueDomains} unique referring domains`);
-  } else if (data.uniqueDomains >= 250) {
-    score = 25;
-    insights.push(`Strong domain portfolio with ${data.uniqueDomains} unique referring domains`);
-  } else if (data.uniqueDomains >= 100) {
-    score = 20;
-    insights.push(`Good domain count but room for growth (${data.uniqueDomains} domains)`);
-  } else if (data.uniqueDomains >= 50) {
-    score = 15;
-    insights.push(`Moderate domain count - expansion recommended (${data.uniqueDomains} domains)`);
-  } else if (data.uniqueDomains >= 25) {
-    score = 10;
-    insights.push(`Low domain count limiting SEO impact (${data.uniqueDomains} domains)`);
-  } else {
-    score = 5;
-    insights.push(`Critical: Very low domain count (${data.uniqueDomains}) - immediate action needed`);
+  averageCompetitorDomains: number,
+  percentage: number
+): RedFlag[] {
+  const redFlags: RedFlag[] = [];
+  
+  // Red Flag: Massive authority domain gap
+  if (percentage < 30) {
+    redFlags.push({
+      type: 'MASSIVE_AUTHORITY_GAP',
+      severity: 'CRITICAL',
+      message: `You have ${data.clientDomains} authority domains vs competitor average of ${Math.round(averageCompetitorDomains)}. This ${Math.round(100 - percentage)}% gap suggests ineffective link building strategy.`,
+      scorePenalty: -2
+    });
   }
-
-  details.volumeMetrics = {
-    uniqueDomains: data.uniqueDomains,
-    monthlyGrowthNeeded: Math.max(0, 100 - data.uniqueDomains) / 6
-  };
-
-  return score;
-}
-
-function calculateDomainQualityScore(
-  data: AuthorityDomainsData,
-  insights: string[],
-  details: Record<string, any>
-): number {
-  let score = 0;
-
-  // High authority domains (DR 70+) - up to 20 points
-  const highAuthorityRatio = data.highAuthorityDomains / data.uniqueDomains;
-  if (highAuthorityRatio >= 0.20) {
-    score += 20;
-    insights.push('Exceptional high-authority domain ratio (20%+ DR 70+)');
-  } else if (highAuthorityRatio >= 0.15) {
-    score += 16;
-    insights.push('Strong high-authority domain presence (15-20% DR 70+)');
-  } else if (highAuthorityRatio >= 0.10) {
-    score += 12;
-    insights.push('Good high-authority domain mix (10-15% DR 70+)');
-  } else if (highAuthorityRatio >= 0.05) {
-    score += 8;
-    insights.push('Below-average high-authority domains - target premium sites');
-  } else {
-    score += 4;
-    insights.push('Lacking high-authority domains - critical gap in link profile');
+  
+  // Red Flag: Stagnant domain growth
+  if (data.domainGrowthTrend && data.domainGrowthTrend.length >= 6) {
+    const recentMonths = data.domainGrowthTrend.slice(-3);
+    const earlierMonths = data.domainGrowthTrend.slice(-6, -3);
+    const recentAvg = recentMonths.reduce((a, b) => a + b, 0) / 3;
+    const earlierAvg = earlierMonths.reduce((a, b) => a + b, 0) / 3;
+    
+    if (recentAvg <= earlierAvg) {
+      redFlags.push({
+        type: 'STAGNANT_DOMAIN_GROWTH',
+        severity: 'HIGH',
+        message: 'No growth in referring domains over the past 3 months. Link building efforts appear ineffective.',
+        scorePenalty: -1.5
+      });
+    }
   }
-
-  // Medium authority domains (DR 40-69) - up to 15 points
-  const mediumAuthorityRatio = data.mediumAuthorityDomains / data.uniqueDomains;
-  if (mediumAuthorityRatio >= 0.40) {
-    score += 15;
-  } else if (mediumAuthorityRatio >= 0.30) {
-    score += 12;
-  } else if (mediumAuthorityRatio >= 0.20) {
-    score += 9;
-  } else {
-    score += 5;
+  
+  // Red Flag: All competitors significantly ahead
+  const allCompetitorsAhead = data.competitorDomains.every(count => data.clientDomains < count * 0.5);
+  if (allCompetitorsAhead) {
+    redFlags.push({
+      type: 'BEHIND_ALL_COMPETITORS',
+      severity: 'HIGH',
+      message: 'You have less than 50% of the authority domains compared to ALL competitors. Major competitive disadvantage.',
+      scorePenalty: -1
+    });
   }
-
-  details.qualityMetrics = {
-    highAuthorityRatio,
-    mediumAuthorityRatio,
-    qualityScore: (highAuthorityRatio * 100 + mediumAuthorityRatio * 50) / 1.5
-  };
-
-  return score;
-}
-
-function calculateDiversityScore(
-  data: AuthorityDomainsData,
-  insights: string[],
-  details: Record<string, any>
-): number {
-  let score = 0;
-
-  // Domain diversity percentage - up to 20 points
-  if (data.domainDiversity >= 80) {
-    score = 20;
-    insights.push(`Excellent link diversity (${data.domainDiversity.toFixed(1)}% unique domains)`);
-  } else if (data.domainDiversity >= 70) {
-    score = 16;
-    insights.push(`Good link diversity (${data.domainDiversity.toFixed(1)}% unique domains)`);
-  } else if (data.domainDiversity >= 60) {
-    score = 12;
-    insights.push(`Acceptable diversity but some concentration risk`);
-  } else if (data.domainDiversity >= 50) {
-    score = 8;
-    insights.push(`Low diversity - over-reliance on few domains`);
-  } else {
-    score = 4;
-    insights.push(`Critical: Poor domain diversity increases penalty risk`);
-  }
-
-  // Calculate concentration risk
-  const concentrationRisk = 100 - data.domainDiversity;
-  if (concentrationRisk > 30) {
-    insights.push(`Warning: ${concentrationRisk.toFixed(1)}% of links from limited domains`);
-  }
-
-  details.diversityMetrics = {
-    domainDiversity: data.domainDiversity,
-    concentrationRisk,
-    diversificationNeeded: Math.max(0, 70 - data.domainDiversity)
-  };
-
-  return score;
-}
-
-function calculateCompetitiveDomainsScore(
-  data: AuthorityDomainsData,
-  insights: string[],
-  details: Record<string, any>
-): number {
-  let score = 0;
-
-  // Compare to competitors - up to 8 points
-  const competitorRatio = data.uniqueDomains / data.competitorAverage;
-  if (competitorRatio >= 1.2) {
-    score += 8;
-    insights.push('Outperforming competitors in domain acquisition');
-  } else if (competitorRatio >= 0.8) {
-    score += 6;
-    insights.push('Competitive with market leaders in domain count');
-  } else if (competitorRatio >= 0.5) {
-    score += 4;
-    insights.push('Behind competitors - opportunity for market share gain');
-  } else {
-    score += 1;
-    insights.push('Significantly trailing competitors in domain diversity');
-  }
-
-  // Compare to industry benchmark - up to 7 points
-  const benchmarkRatio = data.uniqueDomains / data.industryBenchmark;
-  if (benchmarkRatio >= 1.0) {
-    score += 7;
-    insights.push('Meeting or exceeding industry benchmarks');
-  } else if (benchmarkRatio >= 0.7) {
-    score += 5;
-    insights.push('Approaching industry benchmarks for spend level');
-  } else if (benchmarkRatio >= 0.5) {
-    score += 3;
-    insights.push('Below industry standards - efficiency improvements needed');
-  } else {
-    score += 0;
-    insights.push('Far below industry benchmarks - strategic review required');
-  }
-
-  details.competitiveMetrics = {
-    competitorRatio,
-    benchmarkRatio,
-    domainGap: Math.max(0, data.competitorAverage - data.uniqueDomains),
-    benchmarkGap: Math.max(0, data.industryBenchmark - data.uniqueDomains)
-  };
-
-  return score;
-}
-
-function normalizeScore(rawScore: number): number {
-  // Convert 0-100 to 1-10 scale with proper distribution
-  if (rawScore >= 90) return 10;
-  if (rawScore >= 80) return 9;
-  if (rawScore >= 70) return 8;
-  if (rawScore >= 60) return 7;
-  if (rawScore >= 50) return 6;
-  if (rawScore >= 40) return 5;
-  if (rawScore >= 30) return 4;
-  if (rawScore >= 20) return 3;
-  if (rawScore >= 10) return 2;
-  return 1;
+  
+  return redFlags;
 }
 
 function generateDomainInsights(
-  score: number,
   data: AuthorityDomainsData,
+  averageCompetitorDomains: number,
+  percentage: number,
   insights: string[]
 ): void {
-  // Strategic recommendations based on score
-  if (score < 30) {
-    insights.push('URGENT: Domain profile severely underperforming');
-    insights.push('Action: Launch outreach campaign targeting 20+ new domains monthly');
-  } else if (score < 50) {
-    insights.push('Domain acquisition needs significant acceleration');
-    insights.push('Focus: Increase both quantity and quality of referring domains');
-  } else if (score < 70) {
-    insights.push('Domain profile developing - maintain growth momentum');
-    insights.push('Priority: Target more DR 70+ domains for authority boost');
+  // Performance assessment
+  if (percentage >= 80) {
+    insights.push(`Strong competitive position: ${data.clientDomains} authority domains vs competitor average of ${Math.round(averageCompetitorDomains)}.`);
+  } else if (percentage >= 60) {
+    insights.push(`Competitive domain profile: ${data.clientDomains} domains is ${percentage.toFixed(0)}% of competitor average.`);
+  } else if (percentage >= 40) {
+    insights.push(`Below average: ${data.clientDomains} domains is only ${percentage.toFixed(0)}% of competitor average (${Math.round(averageCompetitorDomains)}).`);
   } else {
-    insights.push('Strong domain profile - optimize for quality over quantity');
-    insights.push('Continue targeting high-authority, relevant domains');
+    insights.push(`Weak domain profile: ${data.clientDomains} domains vs competitor average of ${Math.round(averageCompetitorDomains)} (${percentage.toFixed(0)}%).`);
   }
-
-  // Specific domain acquisition targets
-  if (data.uniqueDomains < data.competitorAverage) {
-    const monthlyTarget = Math.ceil((data.competitorAverage - data.uniqueDomains) / 6);
-    insights.push(`Target: Acquire ${monthlyTarget} new domains monthly to match competitors`);
+  
+  // Gap analysis
+  const domainGap = averageCompetitorDomains - data.clientDomains;
+  if (domainGap > 0) {
+    insights.push(`Domain gap: Need ${Math.round(domainGap)} more authority domains to match competitor average.`);
   }
-
-  // Quality improvement suggestions
-  if (data.highAuthorityDomains < 20) {
-    insights.push(`Opportunity: Focus on acquiring ${20 - data.highAuthorityDomains} more DR 70+ domains`);
+  
+  // Competitor comparison
+  const ahead = data.competitorDomains.filter(count => data.clientDomains > count).length;
+  const total = data.competitorDomains.length;
+  insights.push(`Outperforming ${ahead} of ${total} competitors in authority domain count.`);
+  
+  // Growth insights
+  if (data.domainGrowthTrend && data.domainGrowthTrend.length >= 3) {
+    const recentGrowth = data.domainGrowthTrend[data.domainGrowthTrend.length - 1] - data.domainGrowthTrend[data.domainGrowthTrend.length - 4];
+    const monthlyGrowthRate = recentGrowth / 3;
+    
+    if (monthlyGrowthRate > 5) {
+      insights.push(`Good momentum: Adding ${monthlyGrowthRate.toFixed(1)} new domains per month.`);
+    } else if (monthlyGrowthRate > 0) {
+      insights.push(`Slow growth: Only ${monthlyGrowthRate.toFixed(1)} new domains per month.`);
+    } else {
+      insights.push('Warning: No recent growth in referring domains.');
+    }
+  }
+  
+  // Recommendations
+  if (percentage < 60) {
+    insights.push('Priority: Accelerate domain acquisition through diversified link building tactics.');
+  }
+  
+  if (domainGap > 20) {
+    const monthsToClose = Math.ceil(domainGap / 5); // Assuming 5 new domains per month target
+    insights.push(`Target: Acquire 5+ new authority domains monthly to close gap in ${monthsToClose} months.`);
   }
 } 

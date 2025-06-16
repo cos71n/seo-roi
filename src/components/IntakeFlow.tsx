@@ -1,10 +1,11 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { CheckCircle, Clock, ArrowLeft } from 'lucide-react';
+import { CheckCircle, ArrowLeft } from 'lucide-react';
 import { Phase1Form, Phase1Preview } from '@/components/forms/Phase1Form';
 import { Phase2Form, Phase2Preview } from '@/components/forms/Phase2Form';
 import { ProgressBar } from '@/components/ui/form-components';
+import { AnalysisProgress } from '@/components/ui/analysis-progress';
 import {
   FormStep,
   Phase1FormData,
@@ -97,22 +98,20 @@ export const IntakeFlow: React.FC = () => {
 
   // Start the assessment process
   const startAssessment = async () => {
-    setIsLoading(true);
-    try {
-      // Simulate assessment processing
-      await new Promise(resolve => setTimeout(resolve, 3000));
-      
-      // For now, just show completion message
-      // In the actual implementation, this would:
-      // 1. Call SEO analysis APIs
-      // 2. Generate the report
-      // 3. Move to lead gate or results
-      setCurrentStep(FormStep.LEAD_GATE);
-    } catch (error) {
-      console.error('Assessment processing error:', error);
-    } finally {
-      setIsLoading(false);
-    }
+    // The analysis will be handled by the AnalysisProgress component
+    // This function is now just for setting up the processing step
+    setIsLoading(false); // Let AnalysisProgress handle its own loading state
+  };
+
+  // Handle analysis completion
+  const handleAnalysisComplete = () => {
+    setCurrentStep(FormStep.LEAD_GATE);
+  };
+
+  // Handle analysis error
+  const handleAnalysisError = (error: string) => {
+    console.error('Analysis error:', error);
+    // Could show error state or retry options
   };
 
   // Handle editing forms
@@ -219,17 +218,21 @@ export const IntakeFlow: React.FC = () => {
               </div>
             )}
 
-            {currentStep === FormStep.PROCESSING && (
+            {currentStep === FormStep.PROCESSING && phase1Data && (
               <div className="space-y-6">
-                {phase1Data && (
-                  <Phase1Preview data={phase1Data} onEdit={handleEditPhase1} />
-                )}
+                <Phase1Preview data={phase1Data} onEdit={handleEditPhase1} />
                 <Phase2Preview 
                   data={phase2Data || {}} 
                   onEdit={handleEditPhase2}
                   skipped={phase2Skipped}
                 />
-                <ProcessingStep />
+                <AnalysisProgress
+                  domain={phase1Data.domain}
+                  companyName={phase1Data.companyName}
+                  targetKeywords={phase1Data.targetKeywords}
+                  onComplete={handleAnalysisComplete}
+                  onError={handleAnalysisError}
+                />
               </div>
             )}
 
@@ -302,28 +305,4 @@ const StepIndicator: React.FC<StepIndicatorProps> = ({
   );
 };
 
-// Processing Step Component
-const ProcessingStep: React.FC = () => {
-  return (
-    <div className="text-center py-12">
-      <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-blue-600 mx-auto mb-6"></div>
-      <h2 className="text-2xl font-bold text-gray-900 mb-4">
-        Analyzing Your SEO Performance
-      </h2>
-      <div className="space-y-2 text-gray-600 max-w-md mx-auto">
-        <div className="flex items-center justify-center gap-2">
-          <Clock className="h-4 w-4" />
-          <span className="text-sm">Analyzing your domain authority and backlinks...</span>
-        </div>
-        <p className="text-sm">This may take a few moments while we gather data from multiple sources.</p>
-      </div>
-      
-      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mt-6 max-w-md mx-auto">
-        <p className="text-sm text-blue-800">
-          <strong>Note:</strong> This is a demo version. The actual implementation will
-          call real SEO APIs and generate a comprehensive report.
-        </p>
-      </div>
-    </div>
-  );
-}; 
+ 
